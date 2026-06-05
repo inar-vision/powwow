@@ -59,17 +59,18 @@ BYOK. The daemon just spawns whatever command you give `--cmd`.)
 
 ## What works today
 
-- `powwow start` wrapping any command (default `bash`).
+- `powwow start` wrapping any command (default `bash`, or `--cmd "claude"` for a real Claude Code session).
 - Multiple browsers join one shared session; live shared terminal output.
 - Enforced turn-taking — exactly one driver; only the driver's keystrokes run.
 - Request control (queues while someone drives) and yield control.
+- **Suggestion queue** — observers type a prompt and hit Suggest; the driver sees it in a tray above the terminal and can send it to Claude or dismiss it. Observers can retract their own suggestions.
+- **Typing indicators** — animated dots appear on a participant's chip in the header when they are typing (driver typing to Claude, or an observer composing a suggestion).
 - Live presence roster with driver / waiting indicators.
 - Late joiners get replayed scrollback for immediate context.
 - Token-gated join links; localhost + LAN addresses printed on start.
 - Vendored terminal library — no CDN or runtime network dependency.
 
-See `docs/ROADMAP.md` for what's next (session chat, AgentEvent adapter,
-multi-model, optional remote hosting).
+See `docs/DIRECTION.md` for where this is headed, and `docs/ROADMAP.md` for sequencing.
 
 ## How it works
 
