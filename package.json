@@ -1,0 +1,29 @@
+{
+  "name": "powwow",
+  "version": "0.1.0",
+  "description": "Collaborative agentic coding sessions — share a live terminal with turn-taking.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "powwow": "dist/cli.js"
+  },
+  "main": "dist/daemon.js",
+  "scripts": {
+    "build": "tsc",
+    "postinstall": "node scripts/fix-pty-perms.js",
+    "start": "node dist/cli.js start",
+    "dev": "tsx src/cli.ts start",
+    "test:e2e": "node dist/test/e2e.js",
+    "test:relay": "node dist/test/relay.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
