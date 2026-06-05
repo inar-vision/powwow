@@ -38,6 +38,15 @@
     noticeEl.textContent = text;
   }
 
+  function syncNoDriverNotice() {
+    if (!driverId && youId) {
+      noticeEl.textContent = "No one is driving — take control to send input to Claude.";
+      noticeEl.style.color = "#d29922";
+    } else {
+      noticeEl.style.color = "";
+    }
+  }
+
   // --- terminal (created on join so load failures surface cleanly) --------
   function initTerminal() {
     if (typeof Terminal === "undefined") {
@@ -247,14 +256,21 @@
       if (term) term.focus();
       maybeSendResize();
     } else {
-      roleLabel.textContent = driverId ? "observing" : "observing (no driver)";
-      roleLabel.style.color = "#8b949e";
+      roleLabel.textContent = driverId ? "observing" : "no driver";
+      roleLabel.style.color = driverId ? "#8b949e" : "#d29922";
       requestBtn.style.display = "";
       yieldBtn.style.display = "none";
-      requestBtn.textContent = driverId ? "Request control" : "Take control";
+      if (driverId) {
+        requestBtn.textContent = "Request control";
+        requestBtn.classList.remove("primary");
+      } else {
+        requestBtn.textContent = "Take control";
+        requestBtn.classList.add("primary");
+      }
       suggestArea.style.display = youId ? "" : "none";
     }
     renderSuggestions();
+    syncNoDriverNotice();
   }
 
   // --- websocket ----------------------------------------------------------
