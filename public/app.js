@@ -12,6 +12,9 @@
   var term = null;
   var fit = null;
   var suggestions = [];
+  var currentName = "";
+  var reconnectAttempts = 0;
+  var MAX_RECONNECT = 5;
 
   // --- UI elements --------------------------------------------------------
   var overlay = document.getElementById("overlay");
@@ -260,7 +263,10 @@
     ws = new WebSocket(proto + "://" + location.host + "/ws?t=" + encodeURIComponent(token));
 
     ws.onopen = function () {
-      ws.send(JSON.stringify({ type: "hello", name: name }));
+      var hello = { type: "hello", name: name };
+      var storedClientId = sessionStorage.getItem("powwow_cid");
+      if (storedClientId) hello.clientId = storedClientId;
+      ws.send(JSON.stringify(hello));
       setNotice("Connected.");
     };
 
@@ -276,6 +282,8 @@
           youId = msg.youId;
           driverId = msg.driverId;
           suggestions = msg.suggestions || [];
+          reconnectAttempts = 0;
+          if (msg.clientId) sessionStorage.setItem("powwow_cid", msg.clientId);
           if (term && msg.cols && msg.rows) term.resize(msg.cols, msg.rows);
           renderParticipants(msg.participants);
           updateRole();
@@ -313,8 +321,14 @@
     };
 
     ws.onclose = function () {
-      setNotice("Disconnected from session.");
-      roleLabel.textContent = "disconnected";
+      if (reconnectAttempts < MAX_RECONNECT && youId) {
+        reconnectAttempts++;
+        setNotice("Reconnecting… (" + reconnectAttempts + "/" + MAX_RECONNECT + ")");
+        setTimeout(function () { connect(currentName); }, 1500);
+      } else {
+        setNotice("Disconnected from session.");
+        roleLabel.textContent = "disconnected";
+      }
     };
     ws.onerror = function () {
       setNotice("Connection error — is the session still running?");
@@ -324,6 +338,7 @@
   // --- join flow ----------------------------------------------------------
   function join() {
     var name = (nameInput.value || "").trim() || "anon";
+    currentName = name;
     try {
       overlay.style.display = "none";
       initTerminal();

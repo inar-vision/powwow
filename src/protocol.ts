@@ -17,7 +17,7 @@ export interface SuggestionInfo {
 
 // Messages sent from a client (browser) to the daemon.
 export type ClientMessage =
-  | { type: "hello"; name: string }
+  | { type: "hello"; name: string; clientId?: string } // clientId present on reconnect
   | { type: "input"; data: string } // keystrokes; honored only from the driver
   | { type: "resize"; cols: number; rows: number } // honored only from the driver
   | { type: "request_control" }
@@ -32,6 +32,7 @@ export type ServerMessage =
   | {
       type: "init";
       youId: string;
+      clientId: string; // stable identity token — store and send back on reconnect
       driverId: string | null;
       participants: ParticipantInfo[];
       cols: number;

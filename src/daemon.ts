@@ -173,8 +173,21 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });
 
+  // Participants who disconnected recently — held here so a reconnect within
+  // the grace window restores their identity without a "left / joined" pair.
+  const reconnectBuffer = new Map<string, { id: string; name: string; timer: ReturnType<typeof setTimeout> }>();
+  const RECONNECT_GRACE_MS = 30_000;
+
+  function broadcastTyping(id: string) {
+    const now = Date.now();
+    if (now - (lastTypingBroadcast.get(id) ?? 0) < TYPING_THROTTLE) return;
+    lastTypingBroadcast.set(id, now);
+    broadcast({ type: "typing", id, name: nameOf(id) });
+  }
+
   wss.on("connection", (ws: WebSocket) => {
-    const id = crypto.randomBytes(6).toString("hex");
+    // `id` is mutable: the hello handler may reassign it to a buffered id on reconnect.
+    let id = crypto.randomBytes(6).toString("hex");
     sockets.set(ws, id);
 
     ws.on("message", (raw) => {
@@ -184,12 +197,143 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       } catch {
         return;
       }
-      handle(ws, id, msg);
+
+      switch (msg.type) {
+        case "hello": {
+          const rawName = (msg.name || "anon").slice(0, 40);
+          let displayName = rawName;
+          let isReconnect = false;
+
+          if (msg.clientId) {
+            const buffered = reconnectBuffer.get(msg.clientId);
+            if (buffered) {
+              clearTimeout(buffered.timer);
+              reconnectBuffer.delete(msg.clientId);
+              id = buffered.id;
+              sockets.set(ws, id);
+              displayName = buffered.name;
+              isReconnect = true;
+            }
+          }
+
+          const becameDriver = session.add(id, displayName);
+          send(ws, {
+            type: "init",
+            youId: id,
+            clientId: id,
+            driverId: session.getDriverId(),
+            participants: session.snapshot(),
+            cols,
+            rows,
+            suggestions: [...suggestions],
+          });
+          if (scrollback) send(ws, { type: "output", data: scrollback });
+          broadcast({
+            type: "notice",
+            text: isReconnect
+              ? `${displayName} reconnected.`
+              : becameDriver
+                ? `${displayName} joined and is driving.`
+                : `${displayName} joined as an observer.`,
+          });
+          broadcastPresence();
+          break;
+        }
+
+        case "input": {
+          if (session.isDriver(id)) {
+            term.write(msg.data);
+            // Only emit typing for pure printable text — not escape sequences,
+            // xterm cursor-query responses, focus events, or ctrl chords.
+            if (!/[\x00-\x1f\x7f]/.test(msg.data)) broadcastTyping(id);
+          }
+          break;
+        }
+
+        case "resize": {
+          if (session.isDriver(id)) {
+            cols = Math.max(20, Math.min(500, Math.floor(msg.cols)));
+            rows = Math.max(5, Math.min(200, Math.floor(msg.rows)));
+            try {
+              term.resize(cols, rows);
+              broadcast({ type: "resize", cols, rows });
+            } catch {
+              /* terminal may have exited */
+            }
+          }
+          break;
+        }
+
+        case "request_control": {
+          const result = session.requestControl(id);
+          if (result === "granted") {
+            broadcast({ type: "notice", text: `${nameOf(id)} took control.` });
+            broadcastPresence();
+          } else if (result === "queued") {
+            broadcast({ type: "notice", text: `${nameOf(id)} requested control.` });
+            broadcastPresence();
+          }
+          break;
+        }
+
+        case "yield_control": {
+          if (!session.isDriver(id)) break;
+          const newDriver = session.yieldControl(id);
+          broadcast({
+            type: "notice",
+            text: newDriver
+              ? `${nameOf(id)} yielded control to ${nameOf(newDriver)}.`
+              : `${nameOf(id)} released control. No one is driving.`,
+          });
+          broadcastPresence();
+          break;
+        }
+
+        case "suggest": {
+          if (!session.has(id)) break;
+          const text = (msg.text || "").slice(0, 2000).trim();
+          if (!text) break;
+          const suggId = crypto.randomBytes(4).toString("hex");
+          const suggestion: SuggestionInfo = { id: suggId, fromId: id, fromName: nameOf(id), text };
+          suggestions.push(suggestion);
+          broadcast({ type: "suggestion", suggestion });
+          broadcast({ type: "notice", text: `${nameOf(id)} suggested a prompt.` });
+          break;
+        }
+
+        case "accept_suggestion": {
+          if (!session.isDriver(id)) break;
+          const acceptIdx = suggestions.findIndex((s) => s.id === msg.id);
+          if (acceptIdx === -1) break;
+          const accepted = suggestions[acceptIdx];
+          suggestions.splice(acceptIdx, 1);
+          term.write(accepted.text + "\r");
+          broadcast({ type: "suggestion_cleared", id: msg.id });
+          broadcast({ type: "notice", text: `${nameOf(id)} sent ${accepted.fromName}'s suggestion to Claude.` });
+          break;
+        }
+
+        case "dismiss_suggestion": {
+          const dismissIdx = suggestions.findIndex((s) => s.id === msg.id);
+          if (dismissIdx === -1) break;
+          const dismissed = suggestions[dismissIdx];
+          if (!session.isDriver(id) && dismissed.fromId !== id) break;
+          suggestions.splice(dismissIdx, 1);
+          broadcast({ type: "suggestion_cleared", id: msg.id });
+          break;
+        }
+
+        case "typing": {
+          if (session.has(id)) broadcastTyping(id);
+          break;
+        }
+      }
     });
 
     ws.on("close", () => {
       sockets.delete(ws);
       if (session.has(id)) {
+        const name = nameOf(id);
         const wasDriver = session.isDriver(id);
         session.remove(id);
         if (wasDriver) {
@@ -202,137 +346,16 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           });
         }
         broadcastPresence();
+        // Hold the departure notice — if they reconnect within the grace
+        // window we cancel this and skip the "X left" noise entirely.
+        const timer = setTimeout(() => {
+          reconnectBuffer.delete(id);
+          broadcast({ type: "notice", text: `${name} left the session.` });
+        }, RECONNECT_GRACE_MS);
+        reconnectBuffer.set(id, { id, name, timer });
       }
     });
   });
-
-  function broadcastTyping(id: string) {
-    const now = Date.now();
-    if (now - (lastTypingBroadcast.get(id) ?? 0) < TYPING_THROTTLE) return;
-    lastTypingBroadcast.set(id, now);
-    broadcast({ type: "typing", id, name: nameOf(id) });
-  }
-
-  function handle(ws: WebSocket, id: string, msg: ClientMessage) {
-    switch (msg.type) {
-      case "hello": {
-        const name = (msg.name || "anon").slice(0, 40);
-        const becameDriver = session.add(id, name);
-        send(ws, {
-          type: "init",
-          youId: id,
-          driverId: session.getDriverId(),
-          participants: session.snapshot(),
-          cols,
-          rows,
-          suggestions: [...suggestions],
-        });
-        // Replay recent output so a late joiner sees context immediately.
-        if (scrollback) send(ws, { type: "output", data: scrollback });
-        broadcast({
-          type: "notice",
-          text: becameDriver
-            ? `${name} joined and is driving.`
-            : `${name} joined as an observer.`,
-        });
-        broadcastPresence();
-        break;
-      }
-
-      case "input": {
-        if (session.isDriver(id)) {
-          term.write(msg.data);
-          // Only emit typing for pure printable text. Escape sequences (arrow
-          // keys, xterm auto-responses to cursor queries like ESC[6n, focus
-          // events, ctrl chords) are excluded — they contain \x1b and often
-          // include digits that would otherwise pass a printable-char check.
-          if (!/[\x00-\x1f\x7f]/.test(msg.data)) broadcastTyping(id);
-        }
-        break;
-      }
-
-      case "resize": {
-        if (session.isDriver(id)) {
-          cols = Math.max(20, Math.min(500, Math.floor(msg.cols)));
-          rows = Math.max(5, Math.min(200, Math.floor(msg.rows)));
-          try {
-            term.resize(cols, rows);
-            broadcast({ type: "resize", cols, rows });
-          } catch {
-            /* terminal may have exited */
-          }
-        }
-        break;
-      }
-
-      case "request_control": {
-        const result = session.requestControl(id);
-        if (result === "granted") {
-          broadcast({ type: "notice", text: `${nameOf(id)} took control.` });
-          broadcastPresence();
-        } else if (result === "queued") {
-          broadcast({
-            type: "notice",
-            text: `${nameOf(id)} requested control.`,
-          });
-          broadcastPresence();
-        }
-        break;
-      }
-
-      case "yield_control": {
-        if (!session.isDriver(id)) break;
-        const newDriver = session.yieldControl(id);
-        broadcast({
-          type: "notice",
-          text: newDriver
-            ? `${nameOf(id)} yielded control to ${nameOf(newDriver)}.`
-            : `${nameOf(id)} released control. No one is driving.`,
-        });
-        broadcastPresence();
-        break;
-      }
-
-      case "suggest": {
-        if (!session.has(id)) break;
-        const text = (msg.text || "").slice(0, 2000).trim();
-        if (!text) break;
-        const suggId = crypto.randomBytes(4).toString("hex");
-        const suggestion: SuggestionInfo = { id: suggId, fromId: id, fromName: nameOf(id), text };
-        suggestions.push(suggestion);
-        broadcast({ type: "suggestion", suggestion });
-        broadcast({ type: "notice", text: `${nameOf(id)} suggested a prompt.` });
-        break;
-      }
-
-      case "accept_suggestion": {
-        if (!session.isDriver(id)) break;
-        const acceptIdx = suggestions.findIndex((s) => s.id === msg.id);
-        if (acceptIdx === -1) break;
-        const accepted = suggestions[acceptIdx];
-        suggestions.splice(acceptIdx, 1);
-        term.write(accepted.text + "\r");
-        broadcast({ type: "suggestion_cleared", id: msg.id });
-        broadcast({ type: "notice", text: `${nameOf(id)} sent ${accepted.fromName}'s suggestion to Claude.` });
-        break;
-      }
-
-      case "typing": {
-        if (session.has(id)) broadcastTyping(id);
-        break;
-      }
-
-      case "dismiss_suggestion": {
-        const dismissIdx = suggestions.findIndex((s) => s.id === msg.id);
-        if (dismissIdx === -1) break;
-        const dismissed = suggestions[dismissIdx];
-        if (!session.isDriver(id) && dismissed.fromId !== id) break;
-        suggestions.splice(dismissIdx, 1);
-        broadcast({ type: "suggestion_cleared", id: msg.id });
-        break;
-      }
-    }
-  }
 
   return new Promise((resolve) => {
     server.listen(opts.port, opts.host, () => {
