@@ -14,7 +14,8 @@
     "start": "node dist/cli.js start",
     "dev": "tsx src/cli.ts start",
     "test:e2e": "node dist/test/e2e.js",
-    "test:relay": "node dist/test/relay.js"
+    "test:relay": "node dist/test/relay.js",
+    "test:session": "node dist/test/session.js"
   },
   "dependencies": {
     "node-pty": "^1.0.0",
