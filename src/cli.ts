@@ -107,6 +107,8 @@ async function main(): Promise<void> {
   lines.push("  First to join drives. Others observe and can request control.");
   lines.push("  Ctrl-C here ends the session for everyone.");
   lines.push("");
+  lines.push(`  Session log: ${daemon.logFile}`);
+  lines.push("");
   console.log(lines.join("\n"));
 
   const shutdown = () => {

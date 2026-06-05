@@ -1,5 +1,6 @@
 import * as http from "http";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -62,6 +63,7 @@ export interface DaemonOptions {
 
 export interface RunningDaemon {
   port: number;
+  logFile: string;
   close: () => void;
 }
 
@@ -85,9 +87,45 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   let cols = 80;
   let rows = 24;
 
+  // --- session log (append-only JSONL in ~/.powwow/sessions/) -------------
+  const sessionId = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const logDir = path.join(os.homedir(), ".powwow", "sessions");
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFile = path.join(logDir, `${sessionId}.jsonl`);
+  const logStream = fs.createWriteStream(logFile, { flags: "a" });
+
+  function logEntry(entry: object): void {
+    logStream.write(JSON.stringify({ ts: Date.now(), ...entry }) + "\n");
+  }
+
+  function stripAnsi(s: string): string {
+    return s
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC (title, hyperlinks)
+      .replace(/\x1b[@-Z\\-_]/g, "")                       // 2-char sequences
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")              // CSI sequences
+      .replace(/[\x00-\x09\x0b-\x0c\x0e-\x1f\x7f]/g, "")  // control chars (keep \n)
+      .replace(/\r/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  const inputBuffers = new Map<string, string>(); // driver id -> buffered line
+
+  logEntry({ type: "session_start", cmd: opts.cmd, cwd: opts.cwd });
+
   // --- spawn the wrapped agent under a PTY we fully own -------------------
   const spawnPty = opts.spawnPty ?? defaultSpawnPty;
   const term = spawnPty({ cmd: opts.cmd, cwd: opts.cwd, cols, rows });
+
+  let outputBuffer = "";
+  let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flushOutputLog() {
+    outputFlushTimer = null;
+    const stripped = stripAnsi(outputBuffer);
+    if (stripped.length > 0) logEntry({ type: "output", data: stripped });
+    outputBuffer = "";
+  }
 
   term.onData((data: string) => {
     scrollback += data;
@@ -95,10 +133,15 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       scrollback = scrollback.slice(scrollback.length - SCROLLBACK_LIMIT);
     }
     broadcast({ type: "output", data });
+    outputBuffer += data;
+    if (!outputFlushTimer) outputFlushTimer = setTimeout(flushOutputLog, 200);
   });
 
   term.onExit(({ exitCode }) => {
+    if (outputFlushTimer) { clearTimeout(outputFlushTimer); flushOutputLog(); }
     broadcast({ type: "exit", code: exitCode });
+    logEntry({ type: "session_end", exitCode });
+    logStream.end();
   });
 
   // --- helpers ------------------------------------------------------------
@@ -228,6 +271,11 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
             suggestions: [...suggestions],
           });
           if (scrollback) send(ws, { type: "output", data: scrollback });
+          if (isReconnect) {
+            logEntry({ type: "reconnect", id, name: displayName });
+          } else {
+            logEntry({ type: "join", id, name: displayName, becameDriver });
+          }
           broadcast({
             type: "notice",
             text: isReconnect
@@ -246,6 +294,14 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
             // Only emit typing for pure printable text — not escape sequences,
             // xterm cursor-query responses, focus events, or ctrl chords.
             if (!/[\x00-\x1f\x7f]/.test(msg.data)) broadcastTyping(id);
+            // Buffer printable chars; flush complete line on Enter (\r)
+            if (msg.data === "\r") {
+              const line = inputBuffers.get(id) ?? "";
+              inputBuffers.set(id, "");
+              if (line.length > 0) logEntry({ type: "input", id, name: nameOf(id), data: line });
+            } else if (!/[\x00-\x1f\x7f]/.test(msg.data)) {
+              inputBuffers.set(id, (inputBuffers.get(id) ?? "") + msg.data);
+            }
           }
           break;
         }
@@ -267,6 +323,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         case "request_control": {
           const result = session.requestControl(id);
           if (result === "granted") {
+            logEntry({ type: "control_granted", id, name: nameOf(id) });
             broadcast({ type: "notice", text: `${nameOf(id)} took control.` });
             broadcastPresence();
           } else if (result === "queued") {
@@ -278,12 +335,18 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
         case "yield_control": {
           if (!session.isDriver(id)) break;
+          const fromName = nameOf(id);
           const newDriver = session.yieldControl(id);
+          if (newDriver) {
+            logEntry({ type: "control_yielded", fromId: id, fromName, toId: newDriver, toName: nameOf(newDriver) });
+          } else {
+            logEntry({ type: "control_yielded", fromId: id, fromName, toId: null, toName: null });
+          }
           broadcast({
             type: "notice",
             text: newDriver
-              ? `${nameOf(id)} yielded control to ${nameOf(newDriver)}.`
-              : `${nameOf(id)} released control. No one is driving.`,
+              ? `${fromName} yielded control to ${nameOf(newDriver)}.`
+              : `${fromName} released control. No one is driving.`,
           });
           broadcastPresence();
           break;
@@ -294,10 +357,12 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           const text = (msg.text || "").slice(0, 2000).trim();
           if (!text) break;
           const suggId = crypto.randomBytes(4).toString("hex");
-          const suggestion: SuggestionInfo = { id: suggId, fromId: id, fromName: nameOf(id), text };
+          const fromName = nameOf(id);
+          const suggestion: SuggestionInfo = { id: suggId, fromId: id, fromName, text };
           suggestions.push(suggestion);
+          logEntry({ type: "suggestion_posted", fromId: id, fromName, text });
           broadcast({ type: "suggestion", suggestion });
-          broadcast({ type: "notice", text: `${nameOf(id)} suggested a prompt.` });
+          broadcast({ type: "notice", text: `${fromName} suggested a prompt.` });
           break;
         }
 
@@ -308,6 +373,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           const accepted = suggestions[acceptIdx];
           suggestions.splice(acceptIdx, 1);
           term.write(accepted.text + "\r");
+          logEntry({ type: "suggestion_sent", driverId: id, driverName: nameOf(id), fromName: accepted.fromName, text: accepted.text });
           broadcast({ type: "suggestion_cleared", id: msg.id });
           broadcast({ type: "notice", text: `${nameOf(id)} sent ${accepted.fromName}'s suggestion to Claude.` });
           break;
@@ -348,8 +414,10 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         broadcastPresence();
         // Hold the departure notice — if they reconnect within the grace
         // window we cancel this and skip the "X left" noise entirely.
+        const departedId = id;
         const timer = setTimeout(() => {
-          reconnectBuffer.delete(id);
+          reconnectBuffer.delete(departedId);
+          logEntry({ type: "leave", id: departedId, name });
           broadcast({ type: "notice", text: `${name} left the session.` });
         }, RECONNECT_GRACE_MS);
         reconnectBuffer.set(id, { id, name, timer });
@@ -363,6 +431,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       const boundPort = typeof addr === "object" && addr ? addr.port : opts.port;
       resolve({
         port: boundPort,
+        logFile,
         close: () => {
           try {
             term.kill();
@@ -371,6 +440,9 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           }
           wss.close();
           server.close();
+          if (outputFlushTimer) { clearTimeout(outputFlushTimer); flushOutputLog(); }
+          logEntry({ type: "session_end", exitCode: null });
+          logStream.end();
         },
       });
     });
