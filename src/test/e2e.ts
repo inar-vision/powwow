@@ -1,5 +1,6 @@
 /* End-to-end check: turn-taking actually gates input to the driver.
  * Wraps `bash`, connects two clients, and asserts the relay behaviour. */
+import * as os from "os";
 import { WebSocket } from "ws";
 import { startDaemon } from "../daemon";
 
@@ -64,6 +65,7 @@ async function main() {
     port: 0,
     host: "127.0.0.1",
     token: "testtoken",
+    logDir: os.tmpdir(),
   });
   const url = `ws://127.0.0.1:${daemon.port}/ws?t=testtoken`;
 

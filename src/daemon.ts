@@ -59,6 +59,7 @@ export interface DaemonOptions {
   host: string; // bind address, e.g. "0.0.0.0"
   token: string; // shared session secret carried in the join link
   spawnPty?: SpawnPty; // override the PTY factory (used by tests)
+  logDir?: string;  // override log directory (used by tests to avoid polluting ~/.powwow)
 }
 
 export interface RunningDaemon {
@@ -89,7 +90,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   // --- session log (append-only JSONL in ~/.powwow/sessions/) -------------
   const sessionId = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const logDir = path.join(os.homedir(), ".powwow", "sessions");
+  const logDir = opts.logDir ?? path.join(os.homedir(), ".powwow", "sessions");
   fs.mkdirSync(logDir, { recursive: true });
   const logFile = path.join(logDir, `${sessionId}.jsonl`);
   const logStream = fs.createWriteStream(logFile, { flags: "a" });

@@ -2,6 +2,7 @@
  * verified without the native node-pty module. The fake simply echoes whatever
  * is written to it, which is enough to prove that ONLY the driver's input is
  * forwarded to the terminal. Run with: npm run test:relay */
+import * as os from "os";
 import { WebSocket } from "ws";
 import { startDaemon, PtyLike, SpawnPty } from "../daemon";
 
@@ -75,6 +76,7 @@ async function main() {
     host: "127.0.0.1",
     token: "t",
     spawnPty: fakeSpawn,
+    logDir: os.tmpdir(),
   });
   const url = `ws://127.0.0.1:${daemon.port}/ws?t=t`;
 
