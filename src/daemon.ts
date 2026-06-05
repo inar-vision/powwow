@@ -101,10 +101,11 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   function stripAnsi(s: string): string {
     return s
-      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC (title, hyperlinks)
-      .replace(/\x1b[@-Z\\-_]/g, "")                       // 2-char sequences
-      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")              // CSI sequences
-      .replace(/[\x00-\x09\x0b-\x0c\x0e-\x1f\x7f]/g, "")  // control chars (keep \n)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")  // OSC sequences
+      .replace(/\x1b[@-Z\\-_]/g, "")                        // 2-char Fe sequences
+      .replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, "")       // CSI sequences (incl. >, <, ? params)
+      .replace(/\x1bP[^]*?\x1b\\/g, "")                     // DCS sequences
+      .replace(/[\x00-\x09\x0b-\x0c\x0e-\x1f\x7f]/g, "")  // control chars (keep \n=\x0a)
       .replace(/\r/g, "\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
