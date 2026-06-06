@@ -166,6 +166,46 @@ function check(cond: boolean, label: string) {
   check(s.snapshot().find(p => p.id === "c") === undefined, "departed queued participant not in snapshot");
 }
 
+// --- driverEligible=false (observer capability) ---------------------------
+
+{
+  // Observer joins an EMPTY session — must not become driver.
+  const s = new Session();
+  check(s.add("obs", "Carol", false) === false, "observer in empty session: add returns false");
+  check(s.getDriverId() === null, "observer in empty session: driverId stays null");
+  check(!s.isDriver("obs"), "observer in empty session: isDriver false");
+  check(s.has("obs"), "observer in empty session: participant is still added");
+}
+
+{
+  // Control user joining after an observer gets the driver seat normally.
+  const s = new Session();
+  s.add("obs", "Carol", false);
+  check(s.add("ctrl", "Alice", true) === true, "control joiner after observer becomes driver");
+  check(s.isDriver("ctrl"), "control joiner is driver");
+  check(s.getDriverId() === "ctrl", "getDriverId returns control joiner");
+}
+
+{
+  // Multiple observers joining an empty session — none become driver.
+  const s = new Session();
+  s.add("obs1", "Carol", false);
+  s.add("obs2", "Dan", false);
+  check(s.getDriverId() === null, "multiple observers: driverId still null");
+  // Control user joins — takes the empty seat.
+  check(s.add("ctrl", "Alice", true) === true, "control user takes empty driver seat");
+  check(s.isDriver("ctrl"), "control user is driver after multiple observers");
+}
+
+{
+  // Observer can still request_control and be granted if seat is empty.
+  // (requestControl has no eligibility gate — daemon enforces that separately.)
+  const s = new Session();
+  s.add("obs", "Carol", false);
+  const r = s.requestControl("obs");
+  check(r === "granted", "observer requestControl on empty seat: granted by session (daemon gates this)");
+}
+
 // --- final ----------------------------------------------------------------
 
 console.log("");

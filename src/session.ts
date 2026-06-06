@@ -33,12 +33,16 @@ export class Session {
     return this.participants.has(id);
   }
 
-  /** Returns true if this participant became the driver on join. */
-  add(id: string, name: string): boolean {
+  /**
+   * Returns true if this participant became the driver on join.
+   * Pass driverEligible=false (observer-capability connections) to prevent
+   * auto-assignment of the driver seat even when the session is empty.
+   */
+  add(id: string, name: string, driverEligible = true): boolean {
     if (this.participants.has(id)) return this.driverId === id;
     this.participants.set(id, { id, name });
     this.order.push(id);
-    if (this.driverId === null) {
+    if (driverEligible && this.driverId === null) {
       this.driverId = id;
       return true;
     }

@@ -192,6 +192,47 @@ async function main() {
   daemon.close();
   await sleep(100);
 
+  // --- observer-first deadlock regression -----------------------------------
+  // A fresh session where an observer connects before ANY control user.
+  // The driver seat must stay empty so a control user can claim it normally.
+
+  const daemon2 = await startDaemon({
+    cmd: ["fake"],
+    cwd: process.cwd(),
+    port: 0,
+    host: "127.0.0.1",
+    token: "ctrl2",
+    observerToken: "obs2",
+    spawnPty: fakeSpawn,
+    logDir: os.tmpdir(),
+  });
+  const obsFirst = new Client(`ws://127.0.0.1:${daemon2.port}/ws?t=obs2`, "EarlyObs");
+  await obsFirst.ready();
+  await sleep(120);
+  check(!obsFirst.amDriver(), "observer-first: observer does not become driver on empty session");
+  check(obsFirst.driverId === null, "observer-first: driverId is null after observer joins");
+
+  const lateCtrl = new Client(`ws://127.0.0.1:${daemon2.port}/ws?t=ctrl2`, "LateHost");
+  await lateCtrl.ready();
+  await sleep(120);
+  check(lateCtrl.amDriver(), "observer-first: control user joining later becomes driver");
+  check(!obsFirst.amDriver(), "observer-first: observer remains non-driver after control user joins");
+
+  // Control user can still yield/drive normally.
+  let output2 = "";
+  lateCtrl.ws.on("message", (raw) => {
+    const m = JSON.parse(raw.toString());
+    if (m.type === "output") output2 += m.data;
+  });
+  lateCtrl.send({ type: "input", data: "CTRL_DRIVES" });
+  await sleep(150);
+  check(output2.indexOf("CTRL_DRIVES") !== -1, "observer-first: control user input is forwarded");
+
+  obsFirst.ws.close();
+  lateCtrl.ws.close();
+  daemon2.close();
+  await sleep(100);
+
   console.log("");
   console.log(failures === 0 ? "All relay checks passed." : failures + " check(s) failed.");
   process.exit(failures === 0 ? 0 : 1);

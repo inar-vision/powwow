@@ -345,9 +345,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
             }
           }
 
-          const becameDriver = session.add(id, displayName);
-          // Observers must never hold the driver role, even if they join first.
-          if (becameDriver && !canControl) session.yieldControl(id);
+          const becameDriver = session.add(id, displayName, canControl);
           send(ws, {
             type: "init",
             youId: id,

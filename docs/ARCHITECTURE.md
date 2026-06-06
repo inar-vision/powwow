@@ -126,8 +126,9 @@ immediately instead of a blank screen.
 waiting for control, and the current `driverId` (or `null`).
 
 ```
-join (first participant)            ─▶ becomes driver
-join (subsequent)                   ─▶ observer
+join (first control-capable participant) ─▶ becomes driver
+join (observer-capable, any position)    ─▶ never driver (driverEligible=false)
+join (control-capable, seat taken)       ─▶ observer
 request_control, no driver          ─▶ requester becomes driver
 request_control, someone driving    ─▶ requester appended to queue (notify room)
 yield_control (by driver)           ─▶ queue head becomes driver, or null if empty
