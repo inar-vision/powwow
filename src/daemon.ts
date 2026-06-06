@@ -118,9 +118,11 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   logEntry({ type: "session_start", cmd: opts.cmd, cwd: opts.cwd });
 
   // --- agent event adapter (structured events from the AI tool's session) -
-  // Only activated when the wrapped command looks like Claude Code.
-  const cmdBase = path.basename(opts.cmd[0]);
-  const isClaudeLike = /^claude/.test(cmdBase);
+  // Check all cmd args (not just cmd[0]) since the cmd may be prefixed with
+  // `env VAR=val` — e.g. ["env", "CLAUDE_CONFIG_DIR=...", "claude"].
+  const isClaudeLike = opts.cmd.some(
+    (arg) => !arg.includes("=") && /^claude/.test(path.basename(arg))
+  );
   const adapter = isClaudeLike
     ? new ClaudeSessionAdapter(opts.cwd, opts.claudeConfigDir)
     : null;
