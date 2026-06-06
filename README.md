@@ -1,6 +1,10 @@
-# powwow
+# Powwow
+### /ˈpaʊˌwaʊ/
 
-<img src="powwow_stacked_2.jpg" alt="Two browser windows sharing a live Claude Code session">
+*A powwow is a get-together — a gathering where people come to share, watch, and
+take turns. That's exactly what this does for your coding sessions.*
+
+<img src="powwow_stacked_3.jpg" alt="Two browser windows sharing a live Claude Code session">
 
 Share a live agentic coding session with your team. The driver works in a full
 terminal; teammates join a purpose-built observer view that shows a structured
@@ -179,6 +183,11 @@ Conventions:
   `--cwd` matches the directory you run Claude in.
 - **Dangling relay after a crash:** run `powwow stop` (or `powwow stop --all`) to
   kill any leftover processes and clean up the registry.
+
+## License
+
+[AGPL-3.0](LICENSE) — free for personal use and open-source projects. Businesses
+wanting to build commercial products on top of powwow should get in touch.
 
 ## Docs
 
