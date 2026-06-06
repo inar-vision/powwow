@@ -3,7 +3,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import { exec } from "child_process";
+import { exec, spawn } from "child_process";
 import { startDaemon } from "./daemon";
 
 // --- ANSI colour helpers (no deps) ----------------------------------------
@@ -69,7 +69,10 @@ function printHelp(): void {
   console.log(`powwow — share a live agentic coding session with turn-taking
 
 Usage:
-  powwow start [options]   Start a session
+  powwow start [options]   Start a session (wraps a command in a PTY)
+  powwow serve [options]   Start relay without PTY (attach to running Claude)
+  powwow stop [--all]      Stop session for this directory (or all sessions)
+  powwow setup             Install /powwow Claude Code slash command
   powwow log               List recorded sessions
   powwow log <n>           Show nth most recent session (1 = latest)
   powwow log <filename>    Show a specific .jsonl file
@@ -81,9 +84,17 @@ Start options:
   --cwd <dir>         Working directory for the wrapped command (default: cwd)
   -h, --help          Show this help
 
+Serve options:
+  --port <n>              Port to listen on (default: 4321)
+  --cwd <dir>             Working directory of the Claude session (default: cwd)
+  --detach                Fork relay to background, print observer URL, exit
+  --claude-config-dir     Override Claude config directory (default: ~/.claude)
+
 Examples:
   powwow start                       # share a bash session
   powwow start --cmd "claude"        # share a Claude Code session
+  powwow serve --detach              # start relay in background (used by /powwow)
+  powwow setup                       # install the /powwow slash command
   powwow log                         # list sessions
   powwow log 1                       # show the most recent session
 `);
@@ -294,7 +305,7 @@ function openInBrowser(url: string): void {
   exec(cmd, (err) => { if (err) console.error("  Could not auto-open browser:", err.message); });
 }
 
-interface ServeArgs { port: number; host: string; cwd: string; claudeConfigDir?: string; }
+interface ServeArgs { port: number; host: string; cwd: string; claudeConfigDir?: string; detach?: boolean; }
 
 function parseServeArgs(argv: string[]): ServeArgs {
   const args: ServeArgs = { port: 4321, host: "0.0.0.0", cwd: process.cwd() };
@@ -304,13 +315,60 @@ function parseServeArgs(argv: string[]): ServeArgs {
       case "--host": args.host = argv[++i] ?? args.host; break;
       case "--cwd":  args.cwd  = argv[++i] ?? args.cwd; break;
       case "--claude-config-dir": args.claudeConfigDir = argv[++i]; break;
+      case "--detach": args.detach = true; break;
     }
   }
   return args;
 }
 
+function printShareLinks(port: number, token: string): string {
+  const q = `?t=${token}`;
+  const lanIps = lanAddresses();
+  const observerUrls = lanIps.length
+    ? lanIps.map((ip) => `http://${ip}:${port}/observe${q}`)
+    : [`http://localhost:${port}/observe${q}`];
+  console.log("\npowwow is live. Share with teammates:\n");
+  for (const u of observerUrls) console.log(`  ${u}`);
+  console.log("");
+  return observerUrls[0];
+}
+
 async function cmdServe(argv: string[]): Promise<void> {
   const args = parseServeArgs(argv);
+
+  if (args.detach) {
+    // If already running, print the URL and exit without starting another.
+    const existing = readRegistry(args.cwd);
+    if (existing && isProcessAlive(existing.pid)) {
+      printShareLinks(existing.port, existing.token);
+      return;
+    }
+    // Fork self without --detach, fully detached from this process.
+    const spawnArgs = [
+      path.resolve(__dirname, "cli.js"), "serve",
+      "--cwd", args.cwd,
+      "--port", String(args.port),
+      "--host", args.host,
+    ];
+    if (args.claudeConfigDir) spawnArgs.push("--claude-config-dir", args.claudeConfigDir);
+    const child = spawn(process.execPath, spawnArgs, { detached: true, stdio: "ignore" });
+    child.unref();
+    // Poll for the registry file (up to 6 s).
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const reg = readRegistry(args.cwd);
+      if (reg && isProcessAlive(reg.pid)) {
+        const primaryObserver = printShareLinks(reg.port, reg.token);
+        const hostUrl = `http://localhost:${reg.port}/host?t=${reg.token}&obs=${encodeURIComponent(primaryObserver)}`;
+        openInBrowser(hostUrl);
+        return;
+      }
+    }
+    console.error("powwow: relay did not start within 6 seconds.");
+    console.error("  Another session may be running on this port — try: node " + path.resolve(__dirname, "cli.js") + " stop --all");
+    process.exit(1);
+    return;
+  }
 
   // Idempotent: if a relay is already running for this cwd, do nothing.
   const existing = readRegistry(args.cwd);
@@ -332,11 +390,9 @@ async function cmdServe(argv: string[]): Promise<void> {
 
   const q = `?t=${token}`;
   const lanIps = lanAddresses();
-  // Build observer URLs: prefer LAN address so teammates can reach it
   const shareUrls = lanIps.length
     ? lanIps.map((ip) => `http://${ip}:${daemon.port}/observe${q}`)
     : [`http://localhost:${daemon.port}/observe${q}`];
-  // Host companion: always localhost (only the local driver opens it)
   const hostUrl = `http://localhost:${daemon.port}/host${q}&obs=${encodeURIComponent(shareUrls[0])}`;
 
   console.log(`\n  powwow companion started — share with teammates:\n`);
@@ -354,6 +410,80 @@ async function cmdServe(argv: string[]): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
+function cmdStop(argv: string[]): void {
+  const stopAll = argv.includes("--all");
+
+  if (stopAll) {
+    if (!fs.existsSync(ACTIVE_DIR)) {
+      console.log("No active sessions.");
+      return;
+    }
+    const files = fs.readdirSync(ACTIVE_DIR).filter((f) => f.endsWith(".json"));
+    if (files.length === 0) {
+      console.log("No active sessions.");
+      return;
+    }
+    let stopped = 0;
+    for (const file of files) {
+      const filePath = path.join(ACTIVE_DIR, file);
+      try {
+        const reg = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        if (isProcessAlive(reg.pid)) {
+          process.kill(reg.pid, "SIGTERM");
+          stopped++;
+        }
+        fs.unlinkSync(filePath);
+      } catch { fs.unlinkSync(filePath); }
+    }
+    console.log(`Stopped ${stopped} session(s).`);
+    return;
+  }
+
+  // Stop session for a specific cwd (default: current)
+  let cwd = process.cwd();
+  const cwdIdx = argv.indexOf("--cwd");
+  if (cwdIdx !== -1) cwd = argv[cwdIdx + 1] ?? cwd;
+
+  const reg = readRegistry(cwd);
+  if (!reg) {
+    console.log("No active session found for this directory.");
+    return;
+  }
+  if (isProcessAlive(reg.pid)) {
+    process.kill(reg.pid, "SIGTERM");
+    console.log(`Stopped session (pid ${reg.pid}).`);
+  } else {
+    console.log("Session process was already gone — cleaning up registry.");
+  }
+  deleteRegistry(cwd);
+}
+
+function cmdSetup(): void {
+  const commandsDir = path.join(os.homedir(), ".claude", "commands");
+  fs.mkdirSync(commandsDir, { recursive: true });
+
+  const cliPath = path.resolve(__dirname, "cli.js");
+  const content = [
+    "Start a powwow sharing session so teammates can observe this Claude session in real time.",
+    "",
+    "Use the Bash tool to run:",
+    "",
+    "```bash",
+    `node ${cliPath} serve --cwd "$PWD" --detach`,
+    "```",
+    "",
+    "Share the observer URL from the output with your teammates. The host companion will open automatically in your browser.",
+    "",
+    "If you use a non-default Claude config directory, append `--claude-config-dir <path>` to the command above.",
+  ].join("\n");
+
+  const dest = path.join(commandsDir, "powwow.md");
+  fs.writeFileSync(dest, content);
+
+  console.log(`\n  /powwow slash command installed → ${dest}`);
+  console.log("  Type /powwow in any Claude Code session to start sharing.\n");
+}
+
 // --- main -----------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -366,6 +496,16 @@ async function main(): Promise<void> {
 
   if (sub === "serve") {
     await cmdServe(rest);
+    return;
+  }
+
+  if (sub === "setup") {
+    cmdSetup();
+    return;
+  }
+
+  if (sub === "stop") {
+    cmdStop(rest);
     return;
   }
 
