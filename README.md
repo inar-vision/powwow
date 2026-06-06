@@ -7,10 +7,8 @@ terminal; teammates join a purpose-built observer view that shows a structured
 activity feed — user messages, Claude's responses, and expandable tool cards —
 instead of a raw terminal scroll.
 
-The daemon wraps a command (default `bash`, or `claude` for a Claude Code
-session) in a PTY it fully owns, and relays everything to any number of browsers
-over WebSocket. Local-first: no VPS, no tmux, no sync layer. Everything runs on
-your machine and is reachable on your LAN.
+Local-first: no VPS, no tmux, no sync layer. Everything runs on your machine
+and is reachable on your LAN.
 
 ```
 Driver (terminal view /  )  ─┐
@@ -20,12 +18,41 @@ Observer B (/observe)        ─┘       │                │
                                presence          adapter (JSONL)
 ```
 
-## Quick start
+## Two ways to use it
+
+### With an existing Claude Code session (`serve` mode)
+
+If you're already running Claude Code in a terminal, powwow can attach to it
+without wrapping it in a PTY. This is the recommended flow.
+
+**One-time setup** — install the `/powwow` and `/powwow-stop` slash commands:
+
+```bash
+node dist/cli.js setup
+# If your Claude config lives somewhere other than ~/.claude:
+node dist/cli.js setup --claude-config-dir ~/.claude-2
+```
+
+Then from any Claude Code session:
+
+```
+/powwow       # start sharing — prints the observer URL, opens host companion
+/powwow-stop  # stop sharing
+```
+
+The relay starts in the background in ~300ms. Teammates open the observer URL;
+you get a host companion in your browser with the suggestion queue.
+
+### Wrapping a new session (`start` mode)
+
+Starts a fresh PTY-wrapped process — useful for bash, or for running Claude
+inside a full shared terminal.
 
 ```bash
 npm install      # builds node-pty natively; needs a C/C++ toolchain + python3
 npm run build
-node dist/cli.js start
+node dist/cli.js start              # share a bash session
+node dist/cli.js start --cmd "claude"  # wrap a Claude Code session
 ```
 
 You'll get two sets of links:
@@ -43,20 +70,28 @@ You'll get two sets of links:
     on your LAN    http://192.168.1.23:4321/observe?t=<token>
 ```
 
-The driver opens the **Host** link — a full xterm.js terminal with turn-taking
-controls. Teammates open the **Teammates** link — an activity feed that shows
-what Claude is doing in a readable, structured form.
+## CLI reference
 
-To wrap a Claude Code session instead of bash:
+| Command | Description |
+|---|---|
+| `powwow setup [--claude-config-dir <dir>]` | Install `/powwow` and `/powwow-stop` slash commands |
+| `powwow serve [options]` | Start relay for an existing Claude session (detaches by default) |
+| `powwow stop [--cwd <dir>]` | Stop the relay for the current (or given) directory |
+| `powwow stop --all` | Stop all active relays |
+| `powwow start [options]` | Start a PTY-wrapped session |
+| `powwow log` | List recorded sessions |
+| `powwow log <n>` | Show nth most recent session (1 = latest) |
 
-```bash
-node dist/cli.js start --cmd "claude"
-```
+**`serve` options:**
 
-(Requires Claude Code installed and authenticated. The daemon spawns whatever
-command you pass to `--cmd` — auth is handled by Claude itself.)
+| Flag | Default | Meaning |
+|---|---|---|
+| `--port <n>` | `4321` | Port to listen on |
+| `--cwd <dir>` | current dir | Working directory of the Claude session |
+| `--foreground` | — | Run in foreground instead of detaching (for debugging) |
+| `--claude-config-dir <dir>` | `~/.claude` | Override Claude config directory |
 
-### CLI options
+**`start` options:**
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -64,7 +99,7 @@ command you pass to `--cmd` — auth is handled by Claude itself.)
 | `--port <n>` | `4321` | Port to listen on |
 | `--host <addr>` | `0.0.0.0` | Bind address (LAN-reachable by default) |
 | `--cwd <dir>` | current dir | Working directory for the wrapped command |
-| `--claude-config-dir <dir>` | `~/.claude` | Override the Claude config directory if you use a non-default location |
+| `--claude-config-dir <dir>` | `~/.claude` | Override Claude config directory |
 
 ## What works today
 
@@ -74,6 +109,11 @@ command you pass to `--cmd` — auth is handled by Claude itself.)
 - **Suggestion queue** — observers type a prompt and hit Suggest; the driver sees it in a tray and can send it to Claude or dismiss it.
 - **Typing indicators** — animated dots when the driver is typing to Claude or an observer is composing a suggestion.
 - Late joiners get terminal scrollback replayed immediately.
+
+**Host companion** (`/host`) — serve mode only
+- Lightweight browser panel for the driver when powwow is attached to an existing Claude session.
+- Shows the suggestion queue and a copyable observer link.
+- Accept a suggestion to copy it to clipboard; paste into Claude.
 
 **Observer view** (`/observe`) — Claude sessions only
 - Structured activity feed: user messages, Claude text responses, and tool call cards (Bash, Read, Write, Edit, and others), each colour-coded and expandable.
@@ -93,12 +133,13 @@ is driven by a separate adapter that watches Claude's own session JSONL files.
 
 | Path | Responsibility |
 |---|---|
-| `src/cli.ts` | Arg parsing, token, link printing, `powwow log` |
+| `src/cli.ts` | Arg parsing, link printing, `powwow serve/start/stop/setup/log` |
 | `src/daemon.ts` | PTY + HTTP + WebSocket relay; wires up the agent adapter |
 | `src/session.ts` | Pure turn-taking + presence state machine (no I/O) |
 | `src/agent-adapter.ts` | Watches Claude session JSONL, emits typed `AgentEvent`s |
 | `src/protocol.ts` | WebSocket message types |
 | `public/index.html` + `app.js` | Host terminal view |
+| `public/host.html` | Host companion (serve mode) |
 | `public/observe.html` | Observer activity feed |
 | `public/vendor/` | Bundled xterm.js + fit addon (no CDN) |
 
@@ -126,13 +167,6 @@ Conventions:
 - Don't reintroduce a CDN dependency; vendor browser assets into `public/vendor/`.
 - The PTY is injectable (`spawnPty` option) so tests never need native bindings.
 
-## Scope / not yet
-
-Auth is a single unguessable token in the share link — fine for local and
-trusted-LAN use, **not** for exposing to the public internet. Internet
-tunneling, multi-model observer adapters, and remote hosting are post-MVP;
-see `docs/ROADMAP.md`.
-
 ## Troubleshooting
 
 - **`posix_spawnp failed` on start (macOS):** node-pty's `spawn-helper` binary
@@ -143,7 +177,8 @@ see `docs/ROADMAP.md`.
 - **Observer feed empty after joining:** the adapter watches
   `~/.claude/projects/<slug>/` (or `--claude-config-dir` equivalent). Make sure
   `--cwd` matches the directory you run Claude in.
-- **`npm install` complains about an existing `node_modules`:** delete it and reinstall.
+- **Dangling relay after a crash:** run `powwow stop` (or `powwow stop --all`) to
+  kill any leftover processes and clean up the registry.
 
 ## Docs
 
