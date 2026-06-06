@@ -154,6 +154,19 @@
       }
       .expand-toggle:hover { color: var(--text); border-color: var(--muted); }
 
+      /* write/edit content preview inside a tool card */
+      .ev-tool-content {
+        padding: 8px 14px; font-family: ui-monospace, Menlo, monospace;
+        font-size: 12px; color: var(--text); white-space: pre-wrap;
+        word-break: break-all; border-top: 1px solid var(--border);
+      }
+      .ev-tool-content.diff-removed {
+        background: rgba(248,81,73,.06); color: #e07070;
+      }
+      .ev-tool-content.diff-added {
+        background: rgba(63,185,80,.06); color: var(--green);
+      }
+
       /* history / live separator */
       .ev-separator {
         margin: 12px 20px; display: flex; align-items: center; gap: 10px;
@@ -386,6 +399,71 @@
         return "";
       }
 
+      // Append a collapsible content block to a tool card.
+      // expandBtn is appended to hdrEl when content exceeds previewN lines.
+      function appendContentBlock(card, hdrEl, text, cls, previewN) {
+        var lines = text.split("\n");
+        var needsExpand = lines.length > previewN;
+        var block = document.createElement("div");
+        block.className = "ev-tool-content" + (cls ? " " + cls : "");
+        block.textContent = needsExpand ? lines.slice(0, previewN).join("\n") : text;
+        card.appendChild(block);
+        if (needsExpand) {
+          var btn = document.createElement("button");
+          btn.className = "expand-toggle";
+          btn.textContent = "▼ " + lines.length + " lines";
+          hdrEl.appendChild(btn);
+          (function (el, b, full, allLines, n) {
+            var open = false;
+            b.onclick = function () {
+              open = !open;
+              el.textContent = open ? full : allLines.slice(0, n).join("\n");
+              b.textContent = open ? "▲ collapse" : "▼ " + allLines.length + " lines";
+            };
+          })(block, btn, text, lines, previewN);
+        }
+        return block;
+      }
+
+      function appendWriteContent(card, hdrEl, input) {
+        var content = (input && input.content) || "";
+        if (!content) return;
+        appendContentBlock(card, hdrEl, content, "", 8);
+      }
+
+      function appendEditContent(card, hdrEl, input) {
+        var oldStr = (input && input.old_string) || "";
+        var newStr = (input && input.new_string) || "";
+        if (!oldStr && !newStr) return;
+        var PREVIEW = 5;
+        var oldEl = null, newEl = null;
+        if (oldStr) oldEl = appendContentBlock(card, hdrEl, oldStr, "diff-removed", PREVIEW);
+        if (newStr) newEl = appendContentBlock(card, hdrEl, newStr, "diff-added", PREVIEW);
+        // If both sides were long, the two expand buttons conflict — replace them
+        // with a single toggle that expands/collapses both sections together.
+        var oldLong = oldStr && oldStr.split("\n").length > PREVIEW;
+        var newLong = newStr && newStr.split("\n").length > PREVIEW;
+        if (oldLong && newLong) {
+          // Remove the two auto-added buttons; replace with one.
+          var btns = hdrEl.querySelectorAll(".expand-toggle");
+          btns.forEach(function (b) { b.remove(); });
+          var btn = document.createElement("button");
+          btn.className = "expand-toggle";
+          btn.textContent = "▼ expand diff";
+          hdrEl.appendChild(btn);
+          var oLines = oldStr.split("\n"), nLines = newStr.split("\n");
+          (function (oEl, nEl, b, oFull, nFull, ol, nl, n) {
+            var open = false;
+            b.onclick = function () {
+              open = !open;
+              if (oEl) oEl.textContent = open ? oFull : ol.slice(0, n).join("\n");
+              if (nEl) nEl.textContent = open ? nFull : nl.slice(0, n).join("\n");
+              b.textContent = open ? "▲ collapse" : "▼ expand diff";
+            };
+          })(oldEl, newEl, btn, oldStr, newStr, oLines, nLines, PREVIEW);
+        }
+      }
+
       function handleAgentEvent(ev) {
         if (ev.type === "thinking") {
           lastToolCard = null;
@@ -449,8 +527,10 @@
           inp.textContent = summary;
           header.appendChild(badge);
           header.appendChild(inp);
-          // placeholder for expand toggle — added when result arrives
           card.appendChild(header);
+          var tl = ev.tool.toLowerCase();
+          if (tl === "write")  appendWriteContent(card, header, ev.input);
+          if (tl === "edit")   appendEditContent(card, header, ev.input);
           feedEl.appendChild(card);
           lastToolCard = card;
           scrollToBottom();
