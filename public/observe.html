@@ -146,12 +146,12 @@
         word-break: break-all;
       }
       .ev-tool-result.error { color: var(--red); }
-      .expand-btn {
-        display: block; width: 100%; padding: 4px 14px;
-        background: none; border: none; border-top: 1px solid var(--border);
-        color: var(--muted); font-size: 11px; text-align: left; cursor: pointer;
+      .expand-toggle {
+        background: none; border: 1px solid var(--border); border-radius: 4px;
+        color: var(--muted); font-size: 11px; padding: 1px 7px; cursor: pointer;
+        flex: 0 0 auto; white-space: nowrap;
       }
-      .expand-btn:hover { color: var(--text); background: rgba(255,255,255,.03); }
+      .expand-toggle:hover { color: var(--text); border-color: var(--muted); }
 
       /* history / live separator */
       .ev-separator {
@@ -440,9 +440,15 @@
           card.className = "ev-tool";
           var header = document.createElement("div");
           header.className = "ev-tool-header";
-          header.innerHTML =
-            '<span class="tool-badge ' + toolBadgeClass(ev.tool) + '">' + escHtml(ev.tool) + '</span>' +
-            '<span class="tool-input">' + escHtml(summary) + '</span>';
+          var badge = document.createElement("span");
+          badge.className = "tool-badge " + toolBadgeClass(ev.tool);
+          badge.textContent = ev.tool;
+          var inp = document.createElement("span");
+          inp.className = "tool-input";
+          inp.textContent = summary;
+          header.appendChild(badge);
+          header.appendChild(inp);
+          // placeholder for expand toggle — added when result arrives
           card.appendChild(header);
           feedEl.appendChild(card);
           lastToolCard = card;
@@ -458,7 +464,10 @@
             card.className = "ev-tool";
             var header = document.createElement("div");
             header.className = "ev-tool-header";
-            header.innerHTML = '<span class="tool-badge tool-other">' + escHtml(ev.tool) + '</span>';
+            var badge = document.createElement("span");
+            badge.className = "tool-badge tool-other";
+            badge.textContent = ev.tool;
+            header.appendChild(badge);
             card.appendChild(header);
             feedEl.appendChild(card);
           }
@@ -471,17 +480,18 @@
           result.textContent = needsExpand ? lines.slice(0, PREVIEW_LINES).join("\n") : content;
           card.appendChild(result);
           if (needsExpand) {
+            // Toggle button lives in the header, always visible
+            var hdr = card.querySelector(".ev-tool-header");
             var btn = document.createElement("button");
-            btn.className = "expand-btn";
-            btn.textContent = "▼ show all (" + lines.length + " lines)";
-            // btn is on the card, NOT inside result — so max-height can't clip it
-            card.appendChild(btn);
+            btn.className = "expand-toggle";
+            btn.textContent = "▼ " + lines.length + " lines";
+            hdr.appendChild(btn);
             (function (resultEl, btnEl, allLines, previewLines) {
               var expanded = false;
               btnEl.onclick = function () {
                 expanded = !expanded;
                 resultEl.textContent = expanded ? allLines.join("\n") : previewLines.join("\n");
-                btnEl.textContent = expanded ? "▲ collapse" : "▼ show all (" + allLines.length + " lines)";
+                btnEl.textContent = expanded ? "▲ collapse" : "▼ " + allLines.length + " lines";
               };
             })(result, btn, lines, lines.slice(0, PREVIEW_LINES));
           }
@@ -557,6 +567,13 @@
             case "suggestion_cleared":
               suggestions = suggestions.filter(function (s) { return s.id !== msg.id; });
               renderSuggestions();
+              break;
+
+            case "session_reset":
+              feedEl.innerHTML = "";
+              lastToolCard = null;
+              receivingHistory = false;
+              addSessionEvent("New Claude session started.");
               break;
 
             case "exit":

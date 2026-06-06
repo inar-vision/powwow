@@ -194,8 +194,8 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();
     }
     adapter.on("new_session", () => {
-      // Claude started a fresh session — old history is no longer relevant
       agentHistory.length = 0;
+      broadcast({ type: "session_reset" });
     });
     adapter.on("agent_event", (event) => {
       agentHistory.push(event);
