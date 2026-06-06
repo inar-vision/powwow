@@ -1,5 +1,7 @@
 # powwow
 
+<img src="powwow_stacked.jpg" alt="Two browser windows sharing a live Claude Code session" width="700">
+
 Share a live agentic coding session with your team. One person drives, everyone
 else watches in the browser, and anyone can request control. Turn-taking is
 enforced so only one person types at a time.
@@ -45,8 +47,8 @@ To share a real Claude Code session instead of bash:
 node dist/cli.js start --cmd "claude"
 ```
 
-(Requires Claude Code installed and your `ANTHROPIC_API_KEY` in the environment —
-BYOK. The daemon just spawns whatever command you give `--cmd`.)
+(Requires Claude Code installed and authenticated. The daemon just spawns whatever
+command you give `--cmd` — auth is handled by the Claude CLI itself.)
 
 ### CLI options
 
