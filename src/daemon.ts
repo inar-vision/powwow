@@ -64,6 +64,9 @@ export interface DaemonOptions {
   logDir?: string;  // override log directory (used by tests to avoid polluting ~/.powwow)
   claudeConfigDir?: string; // override ~/.claude location (e.g. ~/.claude-2 for personal account)
   serveMode?: boolean; // no PTY — just JSONL adapter + WebSocket; used with Claude Code hooks
+  pingIntervalMs?: number; // WebSocket keepalive interval in ms (default 30000; set low for tests)
+  maxConnections?: number; // max concurrent WebSocket connections (default 20)
+  suggestRateMs?: number;  // min ms between suggestions per poster (default 1500; set 0 for tests)
 }
 
 export interface RunningDaemon {
@@ -86,12 +89,20 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   const serveMode = opts.serveMode ?? false;
   const cmd = opts.cmd ?? [];
 
+  const PING_INTERVAL_MS = opts.pingIntervalMs ?? 30_000;
+  const MAX_CONNECTIONS = opts.maxConnections ?? 20;
+  const SUGGEST_RATE_MS = opts.suggestRateMs ?? 1_500;
+  const MAX_SUGGESTIONS_PER_POSTER = 5;
+  const MAX_SUGGESTIONS_TOTAL = 50;
+
   const session = new Session();
   const sockets = new Map<WebSocket, string>(); // socket -> participant id
   type Capability = "control" | "observer";
   const socketCap = new Map<WebSocket, Capability>(); // set at WS upgrade from token; never trust client messages
+  const socketAlive = new Map<WebSocket, boolean>(); // liveness flag reset by ping, restored by pong
   const suggestions: SuggestionInfo[] = [];
   const lastTypingBroadcast = new Map<string, number>();
+  const lastSuggestTime = new Map<string, number>(); // id -> timestamp; enforces SUGGEST_RATE_MS
   const TYPING_THROTTLE = 400;
   let scrollback = "";
   let cols = 80;
@@ -284,6 +295,11 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       socket.destroy();
       return;
     }
+    if (sockets.size >= MAX_CONNECTIONS) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     const t = url.searchParams.get("t");
     const cap: Capability | null =
       t === opts.token ? "control" :
@@ -315,6 +331,9 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   wss.on("connection", (ws: WebSocket) => {
     // Capability is fixed at upgrade time from the token — never trust the client.
     const canControl = socketCap.get(ws) === "control";
+    // Mark alive; pong frames reset this so the keepalive interval can detect dead sockets.
+    socketAlive.set(ws, true);
+    ws.on("pong", () => socketAlive.set(ws, true));
     // `id` is mutable: the hello handler may reassign it to a buffered id on reconnect.
     let id = crypto.randomBytes(6).toString("hex");
     sockets.set(ws, id);
@@ -449,8 +468,16 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
         case "suggest": {
           if (!session.has(id)) break;
+          const now = Date.now();
+          if (now - (lastSuggestTime.get(id) ?? 0) < SUGGEST_RATE_MS) break; // rate limit
+          lastSuggestTime.set(id, now);
           const text = (msg.text || "").slice(0, 2000).trim();
           if (!text) break;
+          const posterPending = suggestions.filter((s) => s.fromId === id).length;
+          if (suggestions.length >= MAX_SUGGESTIONS_TOTAL || posterPending >= MAX_SUGGESTIONS_PER_POSTER) {
+            send(ws, { type: "notice", text: "Suggestion limit reached — wait for pending ones to clear." });
+            break;
+          }
           const suggId = crypto.randomBytes(4).toString("hex");
           const fromName = nameOf(id);
           const suggestion: SuggestionInfo = { id: suggId, fromId: id, fromName, text };
@@ -499,6 +526,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     ws.on("close", () => {
       sockets.delete(ws);
       socketCap.delete(ws);
+      socketAlive.delete(ws);
       if (session.has(id)) {
         const name = nameOf(id);
         const wasDriver = session.isDriver(id);
@@ -526,6 +554,19 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     });
   });
 
+  // Server-side keepalive: ping every connected socket; terminate those that
+  // don't pong back before the next interval (tunnel/proxy idle kill prevention).
+  const pingInterval = setInterval(() => {
+    for (const [ws] of sockets) {
+      if (!socketAlive.get(ws)) {
+        ws.terminate();
+        continue;
+      }
+      socketAlive.set(ws, false);
+      ws.ping();
+    }
+  }, PING_INTERVAL_MS);
+
   return new Promise((resolve) => {
     server.listen(opts.port, opts.host, () => {
       const addr = server.address();
@@ -534,6 +575,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         port: boundPort,
         logFile,
         close: () => {
+          clearInterval(pingInterval);
           adapter?.stop();
           if (term) {
             try { term.kill(); } catch { /* already gone */ }

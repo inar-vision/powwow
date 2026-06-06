@@ -20,6 +20,9 @@ Working today:
 - **AgentEvent adapter** (`ClaudeSessionAdapter`): structured events from Claude Code's JSONL session files broadcast as `agent_event` frames. Handles new sessions and `/resume`.
 - **Session log**: append-only JSONL written to `~/.powwow/sessions/` for every session.
 - **Server-enforced capability split**: two tokens per session — control token (host only, never shared) and observer token (shareable link). Capability is derived at WebSocket upgrade; observers cannot drive regardless of what the UI sends.
+- **WebSocket keepalive**: server pings all connected sockets every 30 s; sockets that miss a pong are terminated. Prevents tunnel/proxy idle-kill during long agentic pauses.
+- **Suggestion flood guards**: per-poster rate limit (1.5 s by default), per-poster cap (5 pending), and total cap (50). Excess suggestions are silently dropped or produce a private notice.
+- **Connection cap**: concurrent WebSocket connections capped at 20 (503 on upgrade if exceeded).
 - Verified by `test:relay` (headless turn-taking + capability checks), `test:e2e` (real bash PTY), and `test:session` (Session unit tests).
 
 This maps to the MVP scope in `mvp-plan.md`, with one deliberate change: the
@@ -36,6 +39,44 @@ owns the PTY directly. See "Deviations from the original plan" below.
 4. **Dogfooding pass** — run a real Claude Code session with a remote teammate
    over a tunnel (`docs/DOGFOOD.md`). The drive-vs-suggest question is already
    decided (observe + suggest); use the pass to surface the remaining friction.
+
+## Internet-readiness
+
+What's already covered for remote use over a tunnel: TLS comes free (the client
+upgrades to `wss` over HTTPS), the observer/control capability split is enforced
+server-side, and the **control token never leaves localhost** — the host loads
+the host view on `localhost`, so only the view-and-suggest observer token ever
+crosses the internet. Exposure is low by construction.
+
+What's missing, in priority order:
+
+**Tier 1 — will bite a real remote session:**
+
+1. ~~**WebSocket keepalive (ping/pong).**~~ **Done.** Server pings all sockets every 30 s; misses a pong → terminate. Tunnel/proxy idle-kill is neutralised.
+2. **Reachability ergonomics (nice-to-have).** The CLI only prints localhost/LAN
+   links, so over a tunnel the host hand-composes `https://<tunnel>/observe?t=…`.
+   A `--public-url` / `--base-url` flag that makes the printed "Teammates" link
+   the real tunnel URL would remove the friction. Not required (see DOGFOOD.md).
+
+**Tier 2 — abuse guards, before the link reaches anyone less trusted than a known friend:**
+
+3. ~~**Suggestion flooding.**~~ **Done.** Per-poster rate limit (1.5 s), per-poster cap (5), total cap (50).
+4. ~~**Connection cap.**~~ **Done.** 503 on upgrade once 20 concurrent sockets are open.
+5. **Revocation / rotation.** Tokens live for the process lifetime; a leaked
+   observer link can't be rotated and a participant can't be kicked without
+   restarting. Add rotate-observer-token and kick-participant controls.
+
+**Tier 3 — caveats to know (not necessarily build now):**
+
+- The observer link is effectively a password to a read-only screen-share of the
+  whole terminal and Claude session (tool calls, file snippets, scrollback). Treat
+  link hygiene seriously; eventually add host-approval of joiners and real
+  per-participant identity (see Open design questions).
+- Don't screen-share the terminal tab/stdout where the **control** token is printed.
+
+Tier 1 and Tier 2 items #3 and #4 are now done. For a "me + one trusted person
+over a tunnel" test, only #5 (revocation) remains, and it is acceptable to
+restart instead. Tier 2 is fully covered for a wider audience short of revocation.
 
 ## Later (bigger bets)
 

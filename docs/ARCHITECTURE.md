@@ -75,7 +75,7 @@ JSON messages, one object per frame. Types live in `src/protocol.ts`.
 | `{ type: "resize", cols, rows }` | Resize the shared PTY. Honored only from the driver; the new size is broadcast to everyone. |
 | `{ type: "request_control" }` | Ask to drive. Grants immediately if there is no driver; otherwise queues (FIFO) and notifies the room. |
 | `{ type: "yield_control" }` | Driver hands control to the next in the queue (or to nobody if the queue is empty). No-op from a non-driver. |
-| `{ type: "suggest", text }` | Observer posts a prompt suggestion for the driver to review. |
+| `{ type: "suggest", text }` | Observer posts a prompt suggestion for the driver to review. Rate-limited per poster; capped at 5 pending per poster and 50 total. |
 | `{ type: "accept_suggestion", id }` | Driver accepts a suggestion — its text is written to the PTY. |
 | `{ type: "dismiss_suggestion", id }` | Driver or the original poster discards a suggestion. |
 | `{ type: "typing" }` | Sender is currently typing (driver input or observer suggestion box). Throttled broadcast for presence feedback. |
@@ -112,6 +112,14 @@ Emitted by `ClaudeSessionAdapter` and forwarded to all clients as `agent_event` 
 | `{ type: "text", text }` | Agent prose response. |
 | `{ type: "tool_call", tool, input }` | Agent invoked a tool (e.g. `Bash`, `Edit`). |
 | `{ type: "tool_result", tool, content, isError }` | Result returned for a tool call. |
+
+### WebSocket keepalive
+
+The daemon pings every connected socket on a configurable interval (default
+30 s). Each socket's liveness flag is cleared before the ping and restored on
+pong. Sockets that miss a pong are terminated before the next interval fires.
+This keeps connections alive through tunnel/proxy idle-kill timeouts (typically
+60–100 s) during the long quiet stretches of an agentic session.
 
 ### Late-joiner scrollback
 

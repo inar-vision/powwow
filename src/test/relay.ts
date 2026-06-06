@@ -233,6 +233,110 @@ async function main() {
   daemon2.close();
   await sleep(100);
 
+  // --- WebSocket keepalive --------------------------------------------------
+  // A socket that never responds to pings is terminated by the server.
+
+  const daemon3 = await startDaemon({
+    cmd: ["fake"],
+    cwd: process.cwd(),
+    port: 0,
+    host: "127.0.0.1",
+    token: "ctrl3",
+    observerToken: "obs3",
+    spawnPty: fakeSpawn,
+    logDir: os.tmpdir(),
+    pingIntervalMs: 80, // short interval so the test doesn't drag
+  });
+
+  // Connect a raw TCP socket that upgrades to WebSocket but never replies to pings.
+  await new Promise<void>((resolve) => {
+    const net = require("net") as typeof import("net");
+    const sock = net.createConnection(daemon3.port, "127.0.0.1", () => {
+      // Minimal WS upgrade request with the control token.
+      sock.write(
+        "GET /ws?t=ctrl3 HTTP/1.1\r\n" +
+        "Host: 127.0.0.1\r\n" +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+      );
+    });
+    let upgraded = false;
+    sock.on("data", () => { upgraded = true; /* intentionally ignore ping frames */ });
+    sock.on("close", () => {
+      check(upgraded, "keepalive: server accepted the socket initially");
+      check(true, "keepalive: dead socket terminated by server after missed pong");
+      daemon3.close();
+      resolve();
+    });
+    sock.on("error", () => { /* suppress ECONNRESET */ });
+  });
+  await sleep(100);
+
+  // --- suggestion flood guards ----------------------------------------------
+  // Use suggestRateMs:0 to skip the rate-limit delay in the test.
+
+  const daemon4 = await startDaemon({
+    cmd: ["fake"],
+    cwd: process.cwd(),
+    port: 0,
+    host: "127.0.0.1",
+    token: "ctrl4",
+    observerToken: "obs4",
+    spawnPty: fakeSpawn,
+    logDir: os.tmpdir(),
+    suggestRateMs: 0,
+  });
+
+  const floodObs = new Client(`ws://127.0.0.1:${daemon4.port}/ws?t=obs4`, "Flooder");
+  await floodObs.ready();
+  await sleep(80);
+
+  // Post MAX_SUGGESTIONS_PER_POSTER (5) suggestions — all should go through.
+  for (let i = 0; i < 5; i++) {
+    floodObs.send({ type: "suggest", text: `suggestion ${i}` });
+    await sleep(30);
+  }
+  check(floodObs.suggestions.length === 5, "flood guard: first 5 suggestions accepted (per-poster cap)");
+
+  // 6th suggestion from same poster should be rejected.
+  const beforeExtra = floodObs.suggestions.length;
+  floodObs.send({ type: "suggest", text: "one too many" });
+  await sleep(80);
+  check(floodObs.suggestions.length === beforeExtra, "flood guard: 6th suggestion from same poster rejected");
+
+  floodObs.ws.close();
+  daemon4.close();
+  await sleep(100);
+
+  // Rate limit: two rapid suggests from a fresh observer — second should be dropped.
+  const daemon5 = await startDaemon({
+    cmd: ["fake"],
+    cwd: process.cwd(),
+    port: 0,
+    host: "127.0.0.1",
+    token: "ctrl5",
+    observerToken: "obs5",
+    spawnPty: fakeSpawn,
+    logDir: os.tmpdir(),
+    suggestRateMs: 5_000, // very long window so second fires within it
+  });
+
+  const rateObs = new Client(`ws://127.0.0.1:${daemon5.port}/ws?t=obs5`, "RateTester");
+  await rateObs.ready();
+  await sleep(80);
+
+  rateObs.send({ type: "suggest", text: "first" });
+  await sleep(30);
+  rateObs.send({ type: "suggest", text: "second (rate limited)" });
+  await sleep(80);
+  check(rateObs.suggestions.length === 1, "flood guard: rapid second suggest dropped by rate limit");
+
+  rateObs.ws.close();
+  daemon5.close();
+  await sleep(100);
+
   console.log("");
   console.log(failures === 0 ? "All relay checks passed." : failures + " check(s) failed.");
   process.exit(failures === 0 ? 0 : 1);
