@@ -144,9 +144,25 @@
         padding: 8px 14px; font-family: ui-monospace, Menlo, monospace;
         font-size: 12px; color: var(--muted); white-space: pre-wrap;
         max-height: 120px; overflow: hidden; word-break: break-all;
+        transition: max-height .2s ease;
       }
+      .ev-tool-result.expanded { max-height: 2000px; }
       .ev-tool-result.error { color: var(--red); }
-      .result-truncated { color: var(--muted); font-style: italic; font-size: 11px; }
+      .expand-btn {
+        display: block; width: 100%; padding: 4px 14px;
+        background: none; border: none; border-top: 1px solid var(--border);
+        color: var(--muted); font-size: 11px; text-align: left; cursor: pointer;
+      }
+      .expand-btn:hover { color: var(--text); background: rgba(255,255,255,.03); }
+
+      /* history / live separator */
+      .ev-separator {
+        margin: 12px 20px; display: flex; align-items: center; gap: 10px;
+        font-size: 11px; color: var(--muted); letter-spacing: .5px; text-transform: uppercase;
+      }
+      .ev-separator::before, .ev-separator::after {
+        content: ""; flex: 1; height: 1px; background: var(--border);
+      }
 
       /* session events */
       .ev-session {
@@ -228,6 +244,7 @@
       var reconnectAttempts = 0;
       var MAX_RECONNECT = 5;
       var autoScroll = true;
+      var receivingHistory = false;
 
       var overlay     = document.getElementById("overlay");
       var nameInput   = document.getElementById("name-input");
@@ -340,6 +357,14 @@
         scrollToBottom();
       }
 
+      function addSeparator(label) {
+        var el = document.createElement("div");
+        el.className = "ev-separator";
+        el.textContent = label;
+        feedEl.appendChild(el);
+        scrollToBottom();
+      }
+
       function toolBadgeClass(tool) {
         switch (tool.toLowerCase()) {
           case "bash":    return "tool-bash";
@@ -431,7 +456,6 @@
           var card = lastToolCard;
           lastToolCard = null;
           if (!card) {
-            // No preceding tool card — create a minimal one
             card = document.createElement("div");
             card.className = "ev-tool";
             var header = document.createElement("div");
@@ -440,19 +464,34 @@
             card.appendChild(header);
             feedEl.appendChild(card);
           }
-          var MAX = 400;
+          var PREVIEW = 400;
           var content = ev.content || "";
-          var truncated = content.length > MAX;
+          var needsExpand = content.length > PREVIEW;
           var result = document.createElement("div");
           result.className = "ev-tool-result" + (ev.isError ? " error" : "");
-          result.textContent = content.slice(0, MAX);
-          if (truncated) {
-            var more = document.createElement("span");
-            more.className = "result-truncated";
-            more.textContent = " … (" + content.length + " chars)";
-            result.appendChild(more);
-          }
+          result.textContent = needsExpand ? content.slice(0, PREVIEW) : content;
           card.appendChild(result);
+          if (needsExpand) {
+            var btn = document.createElement("button");
+            btn.className = "expand-btn";
+            btn.textContent = "▼ show all (" + content.length + " chars)";
+            (function (resultEl, btnEl, full) {
+              btnEl.onclick = function () {
+                if (resultEl.classList.contains("expanded")) {
+                  resultEl.classList.remove("expanded");
+                  resultEl.textContent = full.slice(0, PREVIEW);
+                  resultEl.appendChild(btnEl); // keep btn inside result for layout
+                  btnEl.textContent = "▼ show all (" + full.length + " chars)";
+                } else {
+                  resultEl.classList.add("expanded");
+                  resultEl.textContent = full;
+                  resultEl.appendChild(btnEl);
+                  btnEl.textContent = "▲ collapse";
+                }
+              };
+            })(result, btn, content);
+            result.appendChild(btn);
+          }
           scrollToBottom();
           return;
         }
@@ -506,6 +545,14 @@
               break;
 
             case "agent_event":
+              if (msg.historical && !receivingHistory) {
+                receivingHistory = true;
+                addSeparator("session history");
+              }
+              if (!msg.historical && receivingHistory) {
+                receivingHistory = false;
+                addSeparator("live");
+              }
               handleAgentEvent(msg.event);
               break;
 

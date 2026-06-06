@@ -117,10 +117,27 @@ export class ClaudeSessionAdapter extends EventEmitter implements AgentAdapter {
     return files.length ? path.join(this.sessionDir, files[0].f) : null;
   }
 
+  // Read all events from the current session file up to filePos.
+  // Used by the daemon to populate the replay buffer for late joiners.
+  history(): AgentEvent[] {
+    if (!this.currentFile || this.filePos === 0) return [];
+    const buf = Buffer.alloc(this.filePos);
+    let fd: number;
+    try { fd = fs.openSync(this.currentFile, "r"); } catch { return []; }
+    fs.readSync(fd, buf, 0, this.filePos, 0);
+    fs.closeSync(fd);
+    const localToolNames = new Map<string, string>();
+    const events: AgentEvent[] = [];
+    for (const line of buf.toString("utf8").split("\n")) {
+      for (const ev of parseLine(line, localToolNames)) events.push(ev);
+    }
+    return events;
+  }
+
   private attachToFile(filePath: string): void {
     this.currentFile = filePath;
     // Position at end — only emit events that happen from now on.
-    // Existing content is the host's prior work; teammates join live.
+    // history() reads back to this position for late-joiner replay.
     try { this.filePos = fs.statSync(filePath).size; } catch { this.filePos = 0; }
 
     this.fileWatcher = fs.watch(filePath, () => {

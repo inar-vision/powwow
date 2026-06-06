@@ -183,11 +183,21 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   }
 
   // --- start agent adapter (if applicable) ---------------------------------
+  const AGENT_HISTORY_LIMIT = 200;
+  const agentHistory: import("./agent-adapter").AgentEvent[] = [];
+
   if (adapter) {
+    adapter.start();
+    // Seed replay buffer with events that already happened this session
+    for (const ev of adapter.history()) {
+      agentHistory.push(ev);
+      if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();
+    }
     adapter.on("agent_event", (event) => {
+      agentHistory.push(event);
+      if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();
       broadcast({ type: "agent_event", event });
     });
-    adapter.start();
   }
 
   // --- static file + token-gated HTTP server ------------------------------
@@ -296,6 +306,12 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
             suggestions: [...suggestions],
           });
           if (scrollback) send(ws, { type: "output", data: scrollback });
+          // Replay agent history for late joiners
+          if (agentHistory.length > 0) {
+            for (const event of agentHistory) {
+              send(ws, { type: "agent_event", event, historical: true });
+            }
+          }
           if (isReconnect) {
             logEntry({ type: "reconnect", id, name: displayName });
           } else {
