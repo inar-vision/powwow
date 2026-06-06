@@ -47,10 +47,20 @@ The daemon serves on one port:
 - `GET /<static>` — files under `public/` (app.js, vendor xterm, css). Not token-gated; they are inert assets.
 - `GET /ws?t=<token>` — WebSocket upgrade. The token is **re-checked here**, because this is where control actually lives. A bad/missing token is rejected at the upgrade.
 
-The token is a 16-byte random hex string minted per `powwow start`. This is the
-MVP's entire auth model: possession of the link grants observer access; the
-token is unguessable but is otherwise the only gate. It is sufficient for local
-and trusted-LAN use, not for exposing the daemon to the public internet.
+Two 16-byte random hex tokens are minted per session:
+
+- **Control token** — carried by the host terminal and host-panel URLs. Grants
+  full capability: `input`, `resize`, `request_control`, `yield_control`,
+  `accept_suggestion`. Never shared.
+- **Observer token** — carried by the shareable teammate link (`/observe?t=…`).
+  Grants view-only + `suggest` and `dismiss_suggestion` (own suggestions only).
+  Safe to distribute to remote participants.
+
+The capability is **derived at the WebSocket upgrade** from whichever token was
+presented, and stored server-side in a `socketCap` map. It is never re-derived
+from client messages — the "never trust the client for control" invariant holds
+across both capabilities. An observer who sends `request_control` or `input` is
+silently ignored by the daemon regardless of what the UI shows.
 
 ## WebSocket protocol
 

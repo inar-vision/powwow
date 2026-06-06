@@ -58,7 +58,8 @@ export interface DaemonOptions {
   cwd: string;
   port: number;
   host: string; // bind address, e.g. "0.0.0.0"
-  token: string; // shared session secret carried in the join link
+  token: string;         // control token — grants driving capability (host/driver views)
+  observerToken: string; // observer token — grants view + suggest only (shareable link)
   spawnPty?: SpawnPty; // override the PTY factory (used by tests)
   logDir?: string;  // override log directory (used by tests to avoid polluting ~/.powwow)
   claudeConfigDir?: string; // override ~/.claude location (e.g. ~/.claude-2 for personal account)
@@ -87,6 +88,8 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   const session = new Session();
   const sockets = new Map<WebSocket, string>(); // socket -> participant id
+  type Capability = "control" | "observer";
+  const socketCap = new Map<WebSocket, Capability>(); // set at WS upgrade from token; never trust client messages
   const suggestions: SuggestionInfo[] = [];
   const lastTypingBroadcast = new Map<string, number>();
   const TYPING_THROTTLE = 400;
@@ -228,10 +231,18 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
-    // Token-gate the HTML pages; vendor assets are harmless without a token.
-    const tokenGated = ["/", "/index.html", "/observe", "/observe.html", "/host", "/host.html"];
-    if (tokenGated.includes(url.pathname)) {
+    // Control token gates the host/driver pages.
+    const controlPages = ["/", "/index.html", "/host", "/host.html"];
+    // Observer token gates the shareable link pages.
+    const observerPages = ["/observe", "/observe.html"];
+    if (controlPages.includes(url.pathname)) {
       if (url.searchParams.get("t") !== opts.token) {
+        res.writeHead(403, { "content-type": "text/plain" });
+        res.end("Invalid or missing session token.");
+        return;
+      }
+    } else if (observerPages.includes(url.pathname)) {
+      if (url.searchParams.get("t") !== opts.observerToken) {
         res.writeHead(403, { "content-type": "text/plain" });
         res.end("Invalid or missing session token.");
         return;
@@ -268,12 +279,25 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-    if (url.pathname !== "/ws" || url.searchParams.get("t") !== opts.token) {
+    if (url.pathname !== "/ws") {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    const t = url.searchParams.get("t");
+    const cap: Capability | null =
+      t === opts.token ? "control" :
+      t === opts.observerToken ? "observer" :
+      null;
+    if (!cap) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      socketCap.set(ws, cap);
+      wss.emit("connection", ws, req);
+    });
   });
 
   // Participants who disconnected recently — held here so a reconnect within
@@ -289,6 +313,8 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   }
 
   wss.on("connection", (ws: WebSocket) => {
+    // Capability is fixed at upgrade time from the token — never trust the client.
+    const canControl = socketCap.get(ws) === "control";
     // `id` is mutable: the hello handler may reassign it to a buffered id on reconnect.
     let id = crypto.randomBytes(6).toString("hex");
     sockets.set(ws, id);
@@ -320,6 +346,8 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           }
 
           const becameDriver = session.add(id, displayName);
+          // Observers must never hold the driver role, even if they join first.
+          if (becameDriver && !canControl) session.yieldControl(id);
           send(ws, {
             type: "init",
             youId: id,
@@ -355,6 +383,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         }
 
         case "input": {
+          if (!canControl) break;
           if (session.isDriver(id) && term) {
             term.write(msg.data);
             // Only emit typing for pure printable text — not escape sequences,
@@ -373,6 +402,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         }
 
         case "resize": {
+          if (!canControl) break;
           if (session.isDriver(id) && term) {
             cols = Math.max(20, Math.min(500, Math.floor(msg.cols)));
             rows = Math.max(5, Math.min(200, Math.floor(msg.rows)));
@@ -387,6 +417,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         }
 
         case "request_control": {
+          if (!canControl) break;
           const result = session.requestControl(id);
           if (result === "granted") {
             logEntry({ type: "control_granted", id, name: nameOf(id) });
@@ -400,7 +431,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         }
 
         case "yield_control": {
-          if (!session.isDriver(id)) break;
+          if (!canControl || !session.isDriver(id)) break;
           const fromName = nameOf(id);
           const newDriver = session.yieldControl(id);
           if (newDriver) {
@@ -433,7 +464,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         }
 
         case "accept_suggestion": {
-          if (!session.isDriver(id)) break;
+          if (!canControl || !session.isDriver(id)) break;
           const acceptIdx = suggestions.findIndex((s) => s.id === msg.id);
           if (acceptIdx === -1) break;
           const accepted = suggestions[acceptIdx];
@@ -469,6 +500,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
     ws.on("close", () => {
       sockets.delete(ws);
+      socketCap.delete(ws);
       if (session.has(id)) {
         const name = nameOf(id);
         const wasDriver = session.isDriver(id);

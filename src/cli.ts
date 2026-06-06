@@ -278,19 +278,25 @@ function cwdToRegistrySlug(cwd: string): string {
   return cwd.replace(/\//g, "-").replace(/\\/g, "-");
 }
 
-function writeRegistry(cwd: string, port: number, token: string): void {
+function writeRegistry(cwd: string, port: number, controlToken: string, observerToken: string): void {
   fs.mkdirSync(ACTIVE_DIR, { recursive: true });
   const file = path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`);
-  fs.writeFileSync(file, JSON.stringify({ port, token, pid: process.pid }));
+  fs.writeFileSync(file, JSON.stringify({ port, controlToken, observerToken, pid: process.pid }));
 }
 
 function deleteRegistry(cwd: string): void {
   try { fs.unlinkSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`)); } catch { }
 }
 
-function readRegistry(cwd: string): { port: number; token: string; pid: number } | null {
+function readRegistry(cwd: string): { port: number; controlToken: string; observerToken: string; pid: number } | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`), "utf8"));
+    const data = JSON.parse(fs.readFileSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`), "utf8"));
+    // Back-compat: old registry files used a single `token` field.
+    if (data.token && !data.controlToken) {
+      data.controlToken = data.token;
+      data.observerToken = data.token;
+    }
+    return data;
   } catch { return null; }
 }
 
@@ -323,12 +329,11 @@ function parseServeArgs(argv: string[]): ServeArgs {
   return args;
 }
 
-function printShareLinks(port: number, token: string): string {
-  const q = `?t=${token}`;
+function printShareLinks(port: number, observerToken: string): string {
   const lanIps = lanAddresses();
   const observerUrls = lanIps.length
-    ? lanIps.map((ip) => `http://${ip}:${port}/observe${q}`)
-    : [`http://localhost:${port}/observe${q}`];
+    ? lanIps.map((ip) => `http://${ip}:${port}/observe?t=${observerToken}`)
+    : [`http://localhost:${port}/observe?t=${observerToken}`];
   console.log("\npowwow is live. Share with teammates:\n");
   for (const u of observerUrls) console.log(`  ${u}`);
   console.log("");
@@ -342,7 +347,7 @@ async function cmdServe(argv: string[]): Promise<void> {
     // Default: detach. If already running, just print the URL and exit.
     const existing = readRegistry(args.cwd);
     if (existing && isProcessAlive(existing.pid)) {
-      printShareLinks(existing.port, existing.token);
+      printShareLinks(existing.port, existing.observerToken);
       process.exit(0);
     }
     // Fork self with --foreground, fully detached from this process.
@@ -360,8 +365,8 @@ async function cmdServe(argv: string[]): Promise<void> {
       await new Promise((r) => setTimeout(r, 200));
       const reg = readRegistry(args.cwd);
       if (reg && isProcessAlive(reg.pid)) {
-        const primaryObserver = printShareLinks(reg.port, reg.token);
-        const hostUrl = `http://localhost:${reg.port}/host?t=${reg.token}&obs=${encodeURIComponent(primaryObserver)}`;
+        const primaryObserver = printShareLinks(reg.port, reg.observerToken);
+        const hostUrl = `http://localhost:${reg.port}/host?t=${reg.controlToken}&obs=${encodeURIComponent(primaryObserver)}`;
         openInBrowser(hostUrl);
         process.exit(0);
       }
@@ -378,24 +383,25 @@ async function cmdServe(argv: string[]): Promise<void> {
     process.exit(0);
   }
 
-  const token = crypto.randomBytes(16).toString("hex");
+  const controlToken = crypto.randomBytes(16).toString("hex");
+  const observerToken = crypto.randomBytes(16).toString("hex");
   const daemon = await startDaemon({
     cwd: args.cwd,
     port: args.port,
     host: args.host,
-    token,
+    token: controlToken,
+    observerToken,
     claudeConfigDir: args.claudeConfigDir,
     serveMode: true,
   });
 
-  writeRegistry(args.cwd, daemon.port, token);
+  writeRegistry(args.cwd, daemon.port, controlToken, observerToken);
 
-  const q = `?t=${token}`;
   const lanIps = lanAddresses();
   const shareUrls = lanIps.length
-    ? lanIps.map((ip) => `http://${ip}:${daemon.port}/observe${q}`)
-    : [`http://localhost:${daemon.port}/observe${q}`];
-  const hostUrl = `http://localhost:${daemon.port}/host${q}&obs=${encodeURIComponent(shareUrls[0])}`;
+    ? lanIps.map((ip) => `http://${ip}:${daemon.port}/observe?t=${observerToken}`)
+    : [`http://localhost:${daemon.port}/observe?t=${observerToken}`];
+  const hostUrl = `http://localhost:${daemon.port}/host?t=${controlToken}&obs=${encodeURIComponent(shareUrls[0])}`;
 
   console.log(`\n  powwow companion started — share with teammates:\n`);
   for (const u of shareUrls) console.log(`    ${u}`);
@@ -530,33 +536,34 @@ async function main(): Promise<void> {
   }
 
   const args = parseStartArgs(rest);
-  const token = crypto.randomBytes(16).toString("hex");
+  const controlToken = crypto.randomBytes(16).toString("hex");
+  const observerToken = crypto.randomBytes(16).toString("hex");
 
   const daemon = await startDaemon({
     cmd: args.cmd,
     cwd: args.cwd,
     port: args.port,
     host: args.host,
-    token,
+    token: controlToken,
+    observerToken,
     claudeConfigDir: args.claudeConfigDir,
   });
 
-  const q = `?t=${token}`;
   const lines: string[] = [];
   lines.push("");
   lines.push("  powwow session is live");
   lines.push(`  wrapping: ${args.cmd.join(" ")}`);
   lines.push("");
   lines.push("  Host (terminal view):");
-  lines.push(`    this machine   http://localhost:${daemon.port}/${q}`);
+  lines.push(`    this machine   http://localhost:${daemon.port}/?t=${controlToken}`);
   for (const ip of lanAddresses()) {
-    lines.push(`    on your LAN    http://${ip}:${daemon.port}/${q}`);
+    lines.push(`    on your LAN    http://${ip}:${daemon.port}/?t=${controlToken}`);
   }
   lines.push("");
-  lines.push("  Teammates (observer view):");
-  lines.push(`    this machine   http://localhost:${daemon.port}/observe${q}`);
+  lines.push("  Teammates (observer view, safe to share):");
+  lines.push(`    this machine   http://localhost:${daemon.port}/observe?t=${observerToken}`);
   for (const ip of lanAddresses()) {
-    lines.push(`    on your LAN    http://${ip}:${daemon.port}/observe${q}`);
+    lines.push(`    on your LAN    http://${ip}:${daemon.port}/observe?t=${observerToken}`);
   }
   lines.push("");
   lines.push("  Ctrl-C here ends the session for everyone.");

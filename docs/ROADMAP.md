@@ -19,7 +19,8 @@ Working today:
 - **Suggestion queue**: observers post prompt suggestions; driver accepts or dismisses.
 - **AgentEvent adapter** (`ClaudeSessionAdapter`): structured events from Claude Code's JSONL session files broadcast as `agent_event` frames. Handles new sessions and `/resume`.
 - **Session log**: append-only JSONL written to `~/.powwow/sessions/` for every session.
-- Verified by `test:relay` (headless turn-taking), `test:e2e` (real bash PTY), and `test:session` (Session unit tests).
+- **Server-enforced capability split**: two tokens per session — control token (host only, never shared) and observer token (shareable link). Capability is derived at WebSocket upgrade; observers cannot drive regardless of what the UI sends.
+- Verified by `test:relay` (headless turn-taking + capability checks), `test:e2e` (real bash PTY), and `test:session` (Session unit tests).
 
 This maps to the MVP scope in `mvp-plan.md`, with one deliberate change: the
 shared dev container on a VPS (tmux + ttyd) was replaced by a local daemon that
@@ -29,31 +30,33 @@ owns the PTY directly. See "Deviations from the original plan" below.
 
 1. **Reconnect handling** — `clientId` is in the protocol (`hello` + `init`) but
    full server-side identity restoration across a socket drop is not yet wired.
-2. **Graceful "no driver" affordance** — when the driver leaves and the queue is
+3. **Graceful "no driver" affordance** — when the driver leaves and the queue is
    empty, make "Take control" more prominent; consider auto-promoting the
    longest-waiting observer.
-3. **Dogfooding pass** — run `powwow serve` with a real Claude Code session as
-   two people and record friction points. Let that list drive what comes next
-   rather than feature instinct.
+4. **Dogfooding pass** — run a real Claude Code session with a remote teammate
+   over a tunnel (`docs/DOGFOOD.md`). The drive-vs-suggest question is already
+   decided (observe + suggest); use the pass to surface the remaining friction.
 
 ## Later (bigger bets)
 
 
 - **Multi-model** — additional `--cmd` targets (OpenAI Codex CLI, Gemini CLI,
   Aider). Mostly "does the wrapped CLI behave in a PTY"; the relay is agnostic.
-- **Remote / self-hosted hosting** — optional deployment where the daemon runs on
-  a small VPS instead of localhost. This re-introduces the "how does the
-  codebase get onto the host" question the local-first MVP sidesteps (git clone
-  on start vs. work against a repo already on the host). Decide before building.
+- **Remote access (near term, small).** Host stays local; expose the session
+  through a tunnel (cloudflared/Tailscale = reachability + TLS, no code). Combined
+  with the observer/control capability split (Next up #1), that's the entire
+  "internet" story for the observe+suggest model — safe because remote can't drive.
+- **VPS-hosted variant (later, bigger).** Running the daemon on a server instead
+  of localhost re-introduces the "how does the codebase get onto the host"
+  question the local-first design sidesteps (git clone on start vs. work against a
+  repo already there). A separate bet; not needed for remote observe+suggest.
 - **Desktop companion app** — session history, past-work summaries, settings.
   Everything in it must also be reachable via CLI (plan constraint).
 - **Session recording & replay** — persist the event stream for async review.
 
 ## Open design questions
 
-- **Auth beyond the token.** Today: unguessable link = observer; control is an
-  explicit request anyone can make. Before any non-LAN exposure we need at least:
-  separate observer vs. control tokens, and probably a per-participant identity.
+- **Auth — capability split DONE.** Two tokens per session; server enforces observer-only for the shareable link. Still open: per-participant identity (vs. one shared observer token) if named remote presence or per-person revocation is ever needed.
 - **Driver eviction / timeouts.** Should an idle driver auto-yield? Should the
   session owner be able to force-yield? Not modeled yet.
 - **Resize policy.** The driver currently dictates one shared terminal size;

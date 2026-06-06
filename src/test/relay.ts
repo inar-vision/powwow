@@ -37,6 +37,7 @@ class Client {
   youId: string | null = null;
   driverId: string | null = null;
   presence: any[] = [];
+  suggestions: any[] = [];
   constructor(url: string, private name: string) {
     this.ws = new WebSocket(url);
     this.ws.on("message", (raw) => {
@@ -48,6 +49,10 @@ class Client {
       } else if (m.type === "presence") {
         this.driverId = m.driverId;
         this.presence = m.participants;
+      } else if (m.type === "suggestion") {
+        this.suggestions.push(m.suggestion);
+      } else if (m.type === "suggestion_cleared") {
+        this.suggestions = this.suggestions.filter((s) => s.id !== m.id);
       }
     });
   }
@@ -74,11 +79,13 @@ async function main() {
     cwd: process.cwd(),
     port: 0,
     host: "127.0.0.1",
-    token: "t",
+    token: "ctrl",
+    observerToken: "obs",
     spawnPty: fakeSpawn,
     logDir: os.tmpdir(),
   });
-  const url = `ws://127.0.0.1:${daemon.port}/ws?t=t`;
+  const url = `ws://127.0.0.1:${daemon.port}/ws?t=ctrl`;
+  const obsUrl = `ws://127.0.0.1:${daemon.port}/ws?t=obs`;
 
   let output = "";
   const alice = new Client(url, "Alice");
@@ -128,6 +135,58 @@ async function main() {
   await sleep(150);
   check(output.indexOf("ALICE_BLOCKED") === -1, "former driver Alice is now blocked");
 
+  // --- capability split: observer token ------------------------------------
+
+  // Wrong token rejected at WebSocket upgrade.
+  await new Promise<void>((resolve) => {
+    const badWs = new WebSocket(`ws://127.0.0.1:${daemon.port}/ws?t=wrongtoken`);
+    let settled = false;
+    const done = (opened: boolean) => {
+      if (settled) return;
+      settled = true;
+      check(!opened, "wrong token: WebSocket upgrade rejected");
+      resolve();
+    };
+    badWs.on("open", () => done(true));
+    badWs.on("close", () => done(false));
+    badWs.on("error", () => done(false));
+  });
+
+  // Observer connects with observer token.
+  const carol = new Client(obsUrl, "Carol");
+  await carol.ready();
+  await sleep(120);
+  check(!carol.amDriver(), "observer joins as non-driver");
+
+  // Observer request_control is silently dropped.
+  carol.send({ type: "request_control" });
+  await sleep(150);
+  check(!carol.amDriver(), "observer request_control: carol does not become driver");
+  check(bob.amDriver(), "observer request_control: bob (control socket) remains driver");
+
+  // Observer input is silently dropped.
+  output = "";
+  carol.send({ type: "input", data: "CAROL_BLOCKED" });
+  await sleep(150);
+  check(output.indexOf("CAROL_BLOCKED") === -1, "observer input: dropped, not forwarded");
+
+  // Observer can post a suggestion (suggestion broadcasts to all).
+  carol.send({ type: "suggest", text: "try a different approach" });
+  await sleep(150);
+  check(carol.suggestions.length > 0, "observer suggest: allowed, broadcast received");
+
+  // Observer accept_suggestion is silently dropped — suggestion must remain.
+  if (carol.suggestions.length > 0) {
+    const suggId = carol.suggestions[0].id;
+    carol.send({ type: "accept_suggestion", id: suggId });
+    await sleep(150);
+    check(
+      carol.suggestions.some((s) => s.id === suggId),
+      "observer accept_suggestion: denied, suggestion not cleared",
+    );
+  }
+
+  carol.ws.close();
   alice.ws.close();
   bob.ws.close();
   daemon.close();
