@@ -16,6 +16,9 @@
 POWWOW_CLI="$(dirname "$0")/../dist/cli.js"
 CWD="$(pwd)"
 
+# Only run if this project has opted in by placing a .powwow file in the root
+[ -f "$CWD/.powwow" ] || exit 0
+
 # Check registry: if a relay is already running for this cwd, exit immediately
 SLUG=$(echo "$CWD" | sed 's|/|-|g')
 REGISTRY="$HOME/.powwow/active/$SLUG.json"
