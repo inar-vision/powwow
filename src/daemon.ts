@@ -54,7 +54,7 @@ const defaultSpawnPty: SpawnPty = (config) => {
 };
 
 export interface DaemonOptions {
-  cmd: string[]; // command + args to wrap, e.g. ["bash"] or ["claude", "--model", "..."]
+  cmd?: string[]; // command + args to wrap — omitted in serve mode
   cwd: string;
   port: number;
   host: string; // bind address, e.g. "0.0.0.0"
@@ -62,6 +62,7 @@ export interface DaemonOptions {
   spawnPty?: SpawnPty; // override the PTY factory (used by tests)
   logDir?: string;  // override log directory (used by tests to avoid polluting ~/.powwow)
   claudeConfigDir?: string; // override ~/.claude location (e.g. ~/.claude-2 for personal account)
+  serveMode?: boolean; // no PTY — just JSONL adapter + WebSocket; used with Claude Code hooks
 }
 
 export interface RunningDaemon {
@@ -81,6 +82,9 @@ const MIME: Record<string, string> = {
 };
 
 export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
+  const serveMode = opts.serveMode ?? false;
+  const cmd = opts.cmd ?? [];
+
   const session = new Session();
   const sockets = new Map<WebSocket, string>(); // socket -> participant id
   const suggestions: SuggestionInfo[] = [];
@@ -115,48 +119,52 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   const inputBuffers = new Map<string, string>(); // driver id -> buffered line
 
-  logEntry({ type: "session_start", cmd: opts.cmd, cwd: opts.cwd });
+  logEntry({ type: "session_start", cmd, cwd: opts.cwd });
 
   // --- agent event adapter (structured events from the AI tool's session) -
-  // Check all cmd args (not just cmd[0]) since the cmd may be prefixed with
-  // `env VAR=val` — e.g. ["env", "CLAUDE_CONFIG_DIR=...", "claude"].
-  const isClaudeLike = opts.cmd.some(
+  // In serve mode the adapter always starts (that's the whole point).
+  // In normal mode, detect claude by checking all cmd args.
+  const isClaudeLike = serveMode || cmd.some(
     (arg) => !arg.includes("=") && /^claude/.test(path.basename(arg))
   );
   const adapter = isClaudeLike
     ? new ClaudeSessionAdapter(opts.cwd, opts.claudeConfigDir)
     : null;
 
-  // --- spawn the wrapped agent under a PTY we fully own -------------------
-  const spawnPty = opts.spawnPty ?? defaultSpawnPty;
-  const term = spawnPty({ cmd: opts.cmd, cwd: opts.cwd, cols, rows });
-
-  let outputBuffer = "";
+  // --- spawn the wrapped agent under a PTY we fully own (skipped in serve mode) ---
+  let term: PtyLike | null = null;
   let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function flushOutputLog() {
-    outputFlushTimer = null;
-    const stripped = stripAnsi(outputBuffer);
-    if (stripped.length > 0) logEntry({ type: "output", data: stripped });
-    outputBuffer = "";
-  }
+  if (!serveMode) {
+    const spawnPty = opts.spawnPty ?? defaultSpawnPty;
+    term = spawnPty({ cmd, cwd: opts.cwd, cols, rows });
 
-  term.onData((data: string) => {
-    scrollback += data;
-    if (scrollback.length > SCROLLBACK_LIMIT) {
-      scrollback = scrollback.slice(scrollback.length - SCROLLBACK_LIMIT);
+    let outputBuffer = "";
+
+    function flushOutputLog() {
+      outputFlushTimer = null;
+      const stripped = stripAnsi(outputBuffer);
+      if (stripped.length > 0) logEntry({ type: "output", data: stripped });
+      outputBuffer = "";
     }
-    broadcast({ type: "output", data });
-    outputBuffer += data;
-    if (!outputFlushTimer) outputFlushTimer = setTimeout(flushOutputLog, 200);
-  });
 
-  term.onExit(({ exitCode }) => {
-    if (outputFlushTimer) { clearTimeout(outputFlushTimer); flushOutputLog(); }
-    broadcast({ type: "exit", code: exitCode });
-    logEntry({ type: "session_end", exitCode });
-    logStream.end();
-  });
+    term.onData((data: string) => {
+      scrollback += data;
+      if (scrollback.length > SCROLLBACK_LIMIT) {
+        scrollback = scrollback.slice(scrollback.length - SCROLLBACK_LIMIT);
+      }
+      broadcast({ type: "output", data });
+      outputBuffer += data;
+      if (!outputFlushTimer) outputFlushTimer = setTimeout(flushOutputLog, 200);
+    });
+
+    term.onExit(({ exitCode }) => {
+      if (outputFlushTimer) { clearTimeout(outputFlushTimer); flushOutputLog(); }
+      broadcast({ type: "exit", code: exitCode });
+      logEntry({ type: "session_end", exitCode });
+      logStream.end();
+    });
+  }
 
   // --- helpers ------------------------------------------------------------
   function send(ws: WebSocket, msg: ServerMessage) {
@@ -221,7 +229,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
     // Token-gate the HTML pages; vendor assets are harmless without a token.
-    const tokenGated = ["/", "/index.html", "/observe", "/observe.html"];
+    const tokenGated = ["/", "/index.html", "/observe", "/observe.html", "/host", "/host.html"];
     if (tokenGated.includes(url.pathname)) {
       if (url.searchParams.get("t") !== opts.token) {
         res.writeHead(403, { "content-type": "text/plain" });
@@ -230,8 +238,9 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       }
     }
 
-    // /observe is an alias for /observe.html
+    // /observe → /observe.html; /host → /host.html
     let filePath = url.pathname === "/observe" ? "/observe.html"
+      : url.pathname === "/host" ? "/host.html"
       : url.pathname === "/" ? "/index.html"
       : url.pathname;
     filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
@@ -321,7 +330,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
             rows,
             suggestions: [...suggestions],
           });
-          if (scrollback) send(ws, { type: "output", data: scrollback });
+          if (!serveMode && scrollback) send(ws, { type: "output", data: scrollback });
           // Replay agent history for late joiners
           if (agentHistory.length > 0) {
             for (const event of agentHistory) {
@@ -346,7 +355,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         }
 
         case "input": {
-          if (session.isDriver(id)) {
+          if (session.isDriver(id) && term) {
             term.write(msg.data);
             // Only emit typing for pure printable text — not escape sequences,
             // xterm cursor-query responses, focus events, or ctrl chords.
@@ -364,7 +373,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         }
 
         case "resize": {
-          if (session.isDriver(id)) {
+          if (session.isDriver(id) && term) {
             cols = Math.max(20, Math.min(500, Math.floor(msg.cols)));
             rows = Math.max(5, Math.min(200, Math.floor(msg.rows)));
             try {
@@ -429,7 +438,12 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           if (acceptIdx === -1) break;
           const accepted = suggestions[acceptIdx];
           suggestions.splice(acceptIdx, 1);
-          term.write(accepted.text + "\r");
+          if (serveMode) {
+            // No PTY in serve mode — push text to the host companion for clipboard copy
+            send(ws, { type: "clipboard", text: accepted.text });
+          } else {
+            term!.write(accepted.text + "\r");
+          }
           logEntry({ type: "suggestion_sent", driverId: id, driverName: nameOf(id), fromName: accepted.fromName, text: accepted.text });
           broadcast({ type: "suggestion_cleared", id: msg.id });
           broadcast({ type: "notice", text: `${nameOf(id)} sent ${accepted.fromName}'s suggestion to Claude.` });
@@ -491,14 +505,12 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         logFile,
         close: () => {
           adapter?.stop();
-          try {
-            term.kill();
-          } catch {
-            /* already gone */
+          if (term) {
+            try { term.kill(); } catch { /* already gone */ }
           }
           wss.close();
           server.close();
-          if (outputFlushTimer) { clearTimeout(outputFlushTimer); flushOutputLog(); }
+          if (outputFlushTimer) clearTimeout(outputFlushTimer);
           logEntry({ type: "session_end", exitCode: null });
           logStream.end();
         },

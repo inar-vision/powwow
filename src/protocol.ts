@@ -54,4 +54,5 @@ export type ServerMessage =
   | { type: "typing"; id: string; name: string } // participant is typing
   | { type: "agent_event"; event: import("./agent-adapter").AgentEvent; historical?: boolean } // structured AI session event
   | { type: "session_reset" } // Claude started a new session — clear the feed
+  | { type: "clipboard"; text: string } // serve mode: copy accepted suggestion to host clipboard
   | { type: "exit"; code: number | null }; // the wrapped agent process ended

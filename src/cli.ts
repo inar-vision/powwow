@@ -3,6 +3,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { exec } from "child_process";
 import { startDaemon } from "./daemon";
 
 // --- ANSI colour helpers (no deps) ----------------------------------------
@@ -258,6 +259,101 @@ function cmdLog(args: string[]): void {
   showSession(filePath);
 }
 
+// --- serve (hook mode: no PTY, just JSONL adapter + host companion) -------
+
+const ACTIVE_DIR = path.join(os.homedir(), ".powwow", "active");
+
+function cwdToRegistrySlug(cwd: string): string {
+  return cwd.replace(/\//g, "-").replace(/\\/g, "-");
+}
+
+function writeRegistry(cwd: string, port: number, token: string): void {
+  fs.mkdirSync(ACTIVE_DIR, { recursive: true });
+  const file = path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`);
+  fs.writeFileSync(file, JSON.stringify({ port, token, pid: process.pid }));
+}
+
+function deleteRegistry(cwd: string): void {
+  try { fs.unlinkSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`)); } catch { }
+}
+
+function readRegistry(cwd: string): { port: number; token: string; pid: number } | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`), "utf8"));
+  } catch { return null; }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function openInBrowser(url: string): void {
+  const cmd = process.platform === "darwin" ? `open "${url}"`
+    : process.platform === "win32" ? `start "" "${url}"`
+    : `xdg-open "${url}"`;
+  exec(cmd, (err) => { if (err) console.error("  Could not auto-open browser:", err.message); });
+}
+
+interface ServeArgs { port: number; host: string; cwd: string; claudeConfigDir?: string; }
+
+function parseServeArgs(argv: string[]): ServeArgs {
+  const args: ServeArgs = { port: 4321, host: "0.0.0.0", cwd: process.cwd() };
+  for (let i = 0; i < argv.length; i++) {
+    switch (argv[i]) {
+      case "--port": args.port = parseInt(argv[++i], 10) || args.port; break;
+      case "--host": args.host = argv[++i] ?? args.host; break;
+      case "--cwd":  args.cwd  = argv[++i] ?? args.cwd; break;
+      case "--claude-config-dir": args.claudeConfigDir = argv[++i]; break;
+    }
+  }
+  return args;
+}
+
+async function cmdServe(argv: string[]): Promise<void> {
+  const args = parseServeArgs(argv);
+
+  // Idempotent: if a relay is already running for this cwd, do nothing.
+  const existing = readRegistry(args.cwd);
+  if (existing && isProcessAlive(existing.pid)) {
+    process.exit(0);
+  }
+
+  const token = crypto.randomBytes(16).toString("hex");
+  const daemon = await startDaemon({
+    cwd: args.cwd,
+    port: args.port,
+    host: args.host,
+    token,
+    claudeConfigDir: args.claudeConfigDir,
+    serveMode: true,
+  });
+
+  writeRegistry(args.cwd, daemon.port, token);
+
+  const q = `?t=${token}`;
+  const lanIps = lanAddresses();
+  // Build observer URLs: prefer LAN address so teammates can reach it
+  const shareUrls = lanIps.length
+    ? lanIps.map((ip) => `http://${ip}:${daemon.port}/observe${q}`)
+    : [`http://localhost:${daemon.port}/observe${q}`];
+  // Host companion: always localhost (only the local driver opens it)
+  const hostUrl = `http://localhost:${daemon.port}/host${q}&obs=${encodeURIComponent(shareUrls[0])}`;
+
+  console.log(`\n  powwow companion started — share with teammates:\n`);
+  for (const u of shareUrls) console.log(`    ${u}`);
+  console.log("");
+
+  openInBrowser(hostUrl);
+
+  const shutdown = () => {
+    deleteRegistry(args.cwd);
+    daemon.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
 // --- main -----------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -265,6 +361,11 @@ async function main(): Promise<void> {
 
   if (sub === "log") {
     cmdLog(rest);
+    return;
+  }
+
+  if (sub === "serve") {
+    await cmdServe(rest);
     return;
   }
 
