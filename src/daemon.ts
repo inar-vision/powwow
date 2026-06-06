@@ -192,9 +192,9 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
-    // The join link must carry the right token. The page itself is harmless;
-    // the token is re-checked on the websocket upgrade where control lives.
-    if (url.pathname === "/" || url.pathname === "/index.html") {
+    // Token-gate the HTML pages; vendor assets are harmless without a token.
+    const tokenGated = ["/", "/index.html", "/observe", "/observe.html"];
+    if (tokenGated.includes(url.pathname)) {
       if (url.searchParams.get("t") !== opts.token) {
         res.writeHead(403, { "content-type": "text/plain" });
         res.end("Invalid or missing session token.");
@@ -202,7 +202,10 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       }
     }
 
-    let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
+    // /observe is an alias for /observe.html
+    let filePath = url.pathname === "/observe" ? "/observe.html"
+      : url.pathname === "/" ? "/index.html"
+      : url.pathname;
     filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
     const abs = path.join(PUBLIC_DIR, filePath);
     if (!abs.startsWith(PUBLIC_DIR)) {
