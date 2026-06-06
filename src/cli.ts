@@ -361,7 +361,7 @@ async function cmdServe(argv: string[]): Promise<void> {
         const primaryObserver = printShareLinks(reg.port, reg.token);
         const hostUrl = `http://localhost:${reg.port}/host?t=${reg.token}&obs=${encodeURIComponent(primaryObserver)}`;
         openInBrowser(hostUrl);
-        return;
+        process.exit(0);
       }
     }
     console.error("powwow: relay did not start within 6 seconds.");
@@ -471,15 +471,11 @@ function cmdSetup(argv: string[]): void {
     + (idx !== -1 ? ` --claude-config-dir ${claudeConfigDir}` : "");
 
   const content = [
-    "Start a powwow sharing session so teammates can observe this Claude session in real time.",
-    "",
-    "Use the Bash tool to run:",
+    "Run this command and reply with the observer URL from its output. Do not run any other commands.",
     "",
     "```bash",
     serveCmd,
     "```",
-    "",
-    "Share the observer URL from the output with your teammates. The host companion will open automatically in your browser.",
   ].join("\n");
 
   const dest = path.join(commandsDir, "powwow.md");
