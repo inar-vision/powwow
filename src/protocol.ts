@@ -1,6 +1,8 @@
 // Wire protocol shared (conceptually) between daemon and browser client.
 // Kept deliberately small and JSON-friendly.
 
+export type { AgentEvent } from "./agent-adapter";
+
 export interface ParticipantInfo {
   id: string;
   name: string;
@@ -50,4 +52,5 @@ export type ServerMessage =
   | { type: "suggestion"; suggestion: SuggestionInfo } // new suggestion posted
   | { type: "suggestion_cleared"; id: string } // suggestion sent or dismissed
   | { type: "typing"; id: string; name: string } // participant is typing
+  | { type: "agent_event"; event: import("./agent-adapter").AgentEvent } // structured AI session event
   | { type: "exit"; code: number | null }; // the wrapped agent process ended

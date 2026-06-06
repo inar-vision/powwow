@@ -6,6 +6,7 @@ import * as crypto from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { Session } from "./session";
 import { ClientMessage, ServerMessage, SuggestionInfo } from "./protocol";
+import { ClaudeSessionAdapter } from "./agent-adapter";
 
 // Minimal surface of a pseudo-terminal we depend on. node-pty satisfies this;
 // tests inject a fake so the relay can be exercised without native bindings.
@@ -60,6 +61,7 @@ export interface DaemonOptions {
   token: string; // shared session secret carried in the join link
   spawnPty?: SpawnPty; // override the PTY factory (used by tests)
   logDir?: string;  // override log directory (used by tests to avoid polluting ~/.powwow)
+  claudeConfigDir?: string; // override ~/.claude location (e.g. ~/.claude-2 for personal account)
 }
 
 export interface RunningDaemon {
@@ -115,6 +117,14 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   logEntry({ type: "session_start", cmd: opts.cmd, cwd: opts.cwd });
 
+  // --- agent event adapter (structured events from the AI tool's session) -
+  // Only activated when the wrapped command looks like Claude Code.
+  const cmdBase = path.basename(opts.cmd[0]);
+  const isClaudeLike = /^claude/.test(cmdBase);
+  const adapter = isClaudeLike
+    ? new ClaudeSessionAdapter(opts.cwd, opts.claudeConfigDir)
+    : null;
+
   // --- spawn the wrapped agent under a PTY we fully own -------------------
   const spawnPty = opts.spawnPty ?? defaultSpawnPty;
   const term = spawnPty({ cmd: opts.cmd, cwd: opts.cwd, cols, rows });
@@ -168,6 +178,14 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   function nameOf(id: string): string {
     return session.snapshot().find((p) => p.id === id)?.name ?? "someone";
+  }
+
+  // --- start agent adapter (if applicable) ---------------------------------
+  if (adapter) {
+    adapter.on("agent_event", (event) => {
+      broadcast({ type: "agent_event", event });
+    });
+    adapter.start();
   }
 
   // --- static file + token-gated HTTP server ------------------------------
@@ -435,6 +453,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         port: boundPort,
         logFile,
         close: () => {
+          adapter?.stop();
           try {
             term.kill();
           } catch {
