@@ -143,10 +143,8 @@
       .ev-tool-result {
         padding: 8px 14px; font-family: ui-monospace, Menlo, monospace;
         font-size: 12px; color: var(--muted); white-space: pre-wrap;
-        max-height: 120px; overflow: hidden; word-break: break-all;
-        transition: max-height .2s ease;
+        word-break: break-all;
       }
-      .ev-tool-result.expanded { max-height: 2000px; }
       .ev-tool-result.error { color: var(--red); }
       .expand-btn {
         display: block; width: 100%; padding: 4px 14px;
@@ -476,22 +474,16 @@
             var btn = document.createElement("button");
             btn.className = "expand-btn";
             btn.textContent = "▼ show all (" + lines.length + " lines)";
+            // btn is on the card, NOT inside result — so max-height can't clip it
+            card.appendChild(btn);
             (function (resultEl, btnEl, allLines, previewLines) {
+              var expanded = false;
               btnEl.onclick = function () {
-                if (resultEl.classList.contains("expanded")) {
-                  resultEl.classList.remove("expanded");
-                  resultEl.textContent = previewLines.join("\n");
-                  resultEl.appendChild(btnEl);
-                  btnEl.textContent = "▼ show all (" + allLines.length + " lines)";
-                } else {
-                  resultEl.classList.add("expanded");
-                  resultEl.textContent = allLines.join("\n");
-                  resultEl.appendChild(btnEl);
-                  btnEl.textContent = "▲ collapse";
-                }
+                expanded = !expanded;
+                resultEl.textContent = expanded ? allLines.join("\n") : previewLines.join("\n");
+                btnEl.textContent = expanded ? "▲ collapse" : "▼ show all (" + allLines.length + " lines)";
               };
             })(result, btn, lines, lines.slice(0, PREVIEW_LINES));
-            result.appendChild(btn);
           }
           scrollToBottom();
           return;

@@ -89,15 +89,16 @@ export class ClaudeSessionAdapter extends EventEmitter implements AgentAdapter {
     const existing = this.mostRecentFile();
     if (existing) this.attachToFile(existing);
 
-    // Watch for new session files (user starts a fresh Claude session)
-    this.dirWatcher = fs.watch(this.sessionDir, (_event, filename) => {
-      if (this.stopped || !filename?.endsWith(".jsonl")) return;
-      const candidate = path.join(this.sessionDir, filename);
-      if (candidate !== this.currentFile && fs.existsSync(candidate)) {
+    // Watch for new session files (user starts a fresh Claude session).
+    // Don't rely on the filename arg — macOS fs.watch passes null for it.
+    this.dirWatcher = fs.watch(this.sessionDir, () => {
+      if (this.stopped) return;
+      const newest = this.mostRecentFile();
+      if (newest && newest !== this.currentFile) {
         this.detachFileWatcher();
         this.toolNames.clear();
         this.emit("new_session");
-        this.attachToFile(candidate);
+        this.attachToFile(newest);
       }
     });
   }
