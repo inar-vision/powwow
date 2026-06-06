@@ -483,8 +483,20 @@ function cmdSetup(argv: string[]): void {
   const dest = path.join(commandsDir, "powwow.md");
   fs.writeFileSync(dest, content);
 
-  console.log(`\n  /powwow slash command installed → ${dest}`);
-  console.log("  Type /powwow in any Claude Code session to start sharing.\n");
+  const stopContent = [
+    "Run this command to stop the powwow sharing session for the current project. Do not run any other commands.",
+    "",
+    "```bash",
+    `node ${cliPath} stop --cwd "$PWD"`,
+    "```",
+  ].join("\n");
+
+  const stopDest = path.join(commandsDir, "powwow-stop.md");
+  fs.writeFileSync(stopDest, stopContent);
+
+  console.log(`\n  /powwow       → ${dest}`);
+  console.log(`  /powwow-stop  → ${stopDest}`);
+  console.log("  Type /powwow or /powwow-stop in any Claude Code session.\n");
 }
 
 // --- main -----------------------------------------------------------------
