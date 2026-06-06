@@ -8,6 +8,7 @@ enforced turn-taking, joinable from the browser with no install.
 Working today:
 
 - `powwow start` wraps a configurable command (default `bash`, or `--cmd "claude"`).
+- `powwow serve` — no-PTY mode for use with Claude Code hooks; agent adapter only.
 - Multiple browsers join one session over WebSocket; output is shared live.
 - Turn-taking: exactly one driver; only the driver's input reaches the PTY.
 - Request control (queues FIFO while someone drives) and yield control.
@@ -15,7 +16,10 @@ Working today:
 - Late joiners get replayed scrollback so they see current context.
 - Token-gated join links; localhost + LAN addresses printed on start.
 - Vendored xterm.js (no CDN / no runtime network dependency).
-- Verified by `test:relay` (headless, 11 checks) and `test:e2e` (real bash PTY).
+- **Suggestion queue**: observers post prompt suggestions; driver accepts or dismisses.
+- **AgentEvent adapter** (`ClaudeSessionAdapter`): structured events from Claude Code's JSONL session files broadcast as `agent_event` frames. Handles new sessions and `/resume`.
+- **Session log**: append-only JSONL written to `~/.powwow/sessions/` for every session.
+- Verified by `test:relay` (headless turn-taking), `test:e2e` (real bash PTY), and `test:session` (Session unit tests).
 
 This maps to the MVP scope in `mvp-plan.md`, with one deliberate change: the
 shared dev container on a VPS (tmux + ttyd) was replaced by a local daemon that
@@ -23,25 +27,18 @@ owns the PTY directly. See "Deviations from the original plan" below.
 
 ## Next up (small, high-value)
 
-1. **Session chat** — the basic coordination chat from the plan. Add a
-   `chat` `ClientMessage` and a broadcast `chat` `ServerMessage`; render a thin
-   panel in the UI. No session-state changes needed.
-2. **`--cmd "claude"` smoke test** — a documented manual run wrapping real Claude
-   Code (BYOK via `ANTHROPIC_API_KEY`), plus notes on any TTY quirks.
-3. **Graceful "no driver" affordance** — when the driver leaves and the queue is
+1. **Reconnect handling** — `clientId` is in the protocol (`hello` + `init`) but
+   full server-side identity restoration across a socket drop is not yet wired.
+2. **Graceful "no driver" affordance** — when the driver leaves and the queue is
    empty, make "Take control" more prominent; consider auto-promoting the
    longest-waiting observer.
-4. **Reconnect handling** — keep a participant's identity across a brief socket
-   drop instead of issuing a fresh id.
-5. **Unit tests for `Session`** — pure state machine, fast; complements the
-   integration-level relay test.
+3. **Dogfooding pass** — run `powwow serve` with a real Claude Code session as
+   two people and record friction points. Let that list drive what comes next
+   rather than feature instinct.
 
-## Later (bigger bets, from the plan)
+## Later (bigger bets)
 
-- **AgentEvent adapter** — insert a parser between `term.onData` and the
-  broadcast to emit structured `output` / `tool_call` / `tool_result` /
-  `turn_complete` / `error`. Prerequisite for provenance and a richer UI. The
-  byte-stream choke point already exists; see `docs/ARCHITECTURE.md`.
+
 - **Multi-model** — additional `--cmd` targets (OpenAI Codex CLI, Gemini CLI,
   Aider). Mostly "does the wrapped CLI behave in a PTY"; the relay is agnostic.
 - **Remote / self-hosted hosting** — optional deployment where the daemon runs on

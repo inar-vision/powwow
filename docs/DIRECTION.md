@@ -120,25 +120,28 @@ project sprawls. Build the substrate first.
 
 ## The next concrete step
 
-Not a database, not resume — the **smallest version of the keystone:**
+~~Tee the session's events to a per-session JSONL log.~~ **Done.** The daemon
+writes an append-only JSONL log to `~/.powwow/sessions/<timestamp>.jsonl` for
+every session: `session_start`, ANSI-stripped `output` chunks, and `session_end`
+with exit code.
 
-> Tee the session's events to a per-session append-only log file (JSONL) as they
-> are broadcast. The daemon already has the single choke point in `daemon.ts`
-> where every byte and every control event passes through — write them to a file
-> there.
+The structured `AgentEvent` adapter is also done: `ClaudeSessionAdapter` reads
+Claude Code's own JSONL session files and broadcasts structured events to the UI.
 
-Roughly a day's work. It immediately gives recording and replay-from-file, seeds
-resume, and gives the summarizer something to read — all without committing to a
-DB or a schema you'll regret. The DB comes when you actually need to query across
-many sessions, not before.
+The keystone exists. What's now unlocked:
+
+- **Resume** — replay the log to reconstruct state.
+- **Async panels / comments** — render the log for someone who wasn't live.
+- **Summaries / diffintel** — run a model over the log.
+
+The right next move is a **dogfooding pass**: run `powwow serve` with a real
+Claude Code task as two people and write down every friction point. Let that list
+— not feature instinct — drive the sequencing of the above.
 
 ## Holding it in your head
 
 - The **live room** is the MVP, and it's done.
-- The **next milestone** is: "the session is now a durable, structured artifact."
-- **Resume, async panels, and diffintel** are the three things that milestone
-  unlocks — built in whatever order dogfooding says hurts most.
-
-Before adding anything, the most valuable move is a **dogfooding pass**: point
-`--cmd "claude"` at a real task, run it as two people, and write down every point
-of friction. Let that list — not feature instinct — drive what comes next.
+- The **structured, durable session artifact** milestone is also done: JSONL log
+  + `ClaudeSessionAdapter` + serve mode.
+- **Resume, async panels, and diffintel** are the three things now unlocked —
+  build in whatever order dogfooding says hurts most.

@@ -11,24 +11,28 @@ the terminal to any number of browsers over WebSocket. One driver at a time;
 others observe and can request control. Local-first: no VPS, no tmux, no sync
 layer.
 
-Deeper detail lives in `docs/ARCHITECTURE.md` (protocol + state machine) and
-`docs/ROADMAP.md` (what's next, open questions). The original product plan is
-`mvp-plan.md`.
+Deeper detail lives in `docs/ARCHITECTURE.md` (protocol + state machine),
+`docs/ROADMAP.md` (what's next, open questions), and `docs/DIRECTION.md`
+(strategy and product framing).
 
 ## Layout
 
 ```
 src/
-  cli.ts        powwow start: arg parsing, token, prints localhost + LAN links
-  daemon.ts     PTY spawn + HTTP (token-gated) + WebSocket relay; PTY injectable
-  session.ts    PURE turn-taking + presence state machine (no I/O)
-  protocol.ts   ClientMessage / ServerMessage wire types
+  cli.ts            powwow start/serve: arg parsing, token, prints localhost + LAN links
+  daemon.ts         PTY spawn (or serve mode) + HTTP + WebSocket relay; PTY injectable
+  session.ts        PURE turn-taking + presence state machine (no I/O)
+  protocol.ts       ClientMessage / ServerMessage wire types
+  agent-adapter.ts  ClaudeSessionAdapter: watches Claude's JSONL files, emits AgentEvents
   test/
+    session.ts  unit tests for Session state machine (no native deps)
     relay.ts    headless turn-taking test (fake echo-PTY, no native deps)
     e2e.ts      same flow against a real bash PTY
 public/
-  index.html    app shell
-  app.js        browser client: xterm terminal, presence chips, request/yield
+  index.html    full participant app shell
+  observe.html  read-only observer view
+  host.html     host control panel (serve mode)
+  app.js        browser client: xterm terminal, presence chips, request/yield, suggestions
   vendor/       bundled xterm.js + fit addon + css (NO CDN)
 scripts/
   fix-pty-perms.js   postinstall: restores node-pty spawn-helper +x on macOS
@@ -41,8 +45,10 @@ npm install        # builds node-pty (native); runs postinstall perm fix
 npm run build      # tsc -> dist/
 npm run dev        # run from source via tsx, no build
 node dist/cli.js start [--cmd "claude"] [--port N] [--host H] [--cwd DIR]
-npm run test:relay # headless turn-taking checks — run this after touching the relay
-npm run test:e2e   # real-bash PTY version (needs a successful install)
+node dist/cli.js serve [--port N] [--host H] [--cwd DIR]   # serve mode (no PTY)
+npm run test:session  # Session unit tests — run after touching session.ts
+npm run test:relay    # headless turn-taking checks — run after touching daemon.ts / protocol.ts
+npm run test:e2e      # real-bash PTY version (needs a successful install)
 ```
 
 After changing anything in `public/`, no rebuild is needed — just hard-refresh
@@ -73,8 +79,8 @@ table in `docs/ARCHITECTURE.md`.
   the daemon. Keep it that way (self-hosted, offline-friendly).
 - **The PTY is injectable.** `startDaemon({ spawnPty })` lets tests pass a fake.
   Production uses the lazy `defaultSpawnPty` (requires `node-pty`).
-- **Run `npm run test:relay` after touching** `session.ts`, `daemon.ts`, or
-  `protocol.ts`. It's fast and catches turn-taking regressions.
+- **Run `npm run test:session` after touching `session.ts`** — pure unit test, no deps.
+- **Run `npm run test:relay` after touching** `daemon.ts` or `protocol.ts`. Catches turn-taking regressions.
 
 ## Gotchas
 
@@ -89,10 +95,3 @@ table in `docs/ARCHITECTURE.md`.
 - **One daemon = one session** currently. Multi-session would need session ids in
   the routes and a registry.
 
-## Adding the obvious next features
-
-- **Session chat:** add a `chat` `ClientMessage` + broadcast `chat`
-  `ServerMessage`, render a panel in `app.js`. No `session.ts` change.
-- **AgentEvent adapter:** insert a parser between `term.onData` and `broadcast`
-  in `daemon.ts`; emit structured events alongside raw `output`. `session.ts`
-  and turn-taking are unaffected. See `docs/ROADMAP.md`.
