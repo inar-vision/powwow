@@ -188,10 +188,27 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   if (adapter) {
     adapter.start();
-    adapter.on("new_session", () => {
+    function replayHistory() {
       agentHistory.length = 0;
-      broadcast({ type: "session_reset" });
-    });
+      for (const ev of adapter!.history()) {
+        agentHistory.push(ev);
+        if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();
+      }
+      for (const [ws] of sockets) {
+        if (ws.readyState === WebSocket.OPEN) {
+          send(ws, { type: "session_reset" });
+          for (const ev of agentHistory) {
+            send(ws, { type: "agent_event", event: ev, historical: true });
+          }
+        }
+      }
+    }
+
+    // File switch detected by the poll (new session or /resume into a different file).
+    adapter.on("session_changed", replayHistory);
+    // Claude wrote a "mode" record to the current file — it has initialised or
+    // resumed a session. Replay whatever history was in the file before we attached.
+    adapter.on("session_resumed", replayHistory);
     adapter.on("agent_event", (event) => {
       agentHistory.push(event);
       if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();

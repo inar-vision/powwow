@@ -71,9 +71,11 @@ export class ClaudeSessionAdapter extends EventEmitter implements AgentAdapter {
   private currentFile: string | null = null;
   private filePos = 0;
   private toolNames = new Map<string, string>(); // tool_use_id → tool name
-  private dirWatcher: fs.FSWatcher | null = null;
+  private knownFiles = new Set<string>(); // files seen at start — resumes land here
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private fileWatcher: fs.FSWatcher | null = null;
   private stopped = false;
+  private sessionInitSeen = false; // guards against emitting session_resumed more than once per file
 
   constructor(cwd: string, configDir?: string) {
     super();
@@ -86,28 +88,43 @@ export class ClaudeSessionAdapter extends EventEmitter implements AgentAdapter {
   start(): void {
     fs.mkdirSync(this.sessionDir, { recursive: true });
 
+    // Record all existing files so we can distinguish a /resume (existing file
+    // becomes most-recent by mtime) from a new session (brand-new file).
+    if (fs.existsSync(this.sessionDir)) {
+      for (const f of fs.readdirSync(this.sessionDir).filter((f) => f.endsWith(".jsonl"))) {
+        this.knownFiles.add(path.join(this.sessionDir, f));
+      }
+    }
+
     const existing = this.mostRecentFile();
     if (existing) this.attachToFile(existing);
 
-    // Watch for new session files (user starts a fresh Claude session).
-    // Don't rely on the filename arg — macOS fs.watch passes null for it.
-    this.dirWatcher = fs.watch(this.sessionDir, () => {
+    // Poll every 1s to detect both new sessions (new .jsonl file) and /resume
+    // (existing file gains new writes and becomes the most-recently-modified).
+    // fs.watch on a directory only fires on file creation/deletion, not on
+    // writes to existing files, so polling is the only reliable approach.
+    this.pollTimer = setInterval(() => {
       if (this.stopped) return;
       const newest = this.mostRecentFile();
+      if (process.env["POWWOW_DEBUG"]) {
+        process.stderr.write(`[adapter] poll: newest=${newest} current=${this.currentFile}\n`);
+      }
       if (newest && newest !== this.currentFile) {
+        const isResume = this.knownFiles.has(newest);
+        process.stderr.write(`[adapter] session switch → ${path.basename(newest)} (isResume=${isResume})\n`);
         this.detachFileWatcher();
         this.toolNames.clear();
-        this.emit("new_session");
+        this.knownFiles.add(newest);
         this.attachToFile(newest);
+        this.emit("session_changed", { isResume });
       }
-    });
+    }, 1000);
   }
 
   stop(): void {
     this.stopped = true;
     this.detachFileWatcher();
-    this.dirWatcher?.close();
-    this.dirWatcher = null;
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
   }
 
   private mostRecentFile(): string | null {
@@ -138,6 +155,7 @@ export class ClaudeSessionAdapter extends EventEmitter implements AgentAdapter {
 
   private attachToFile(filePath: string): void {
     this.currentFile = filePath;
+    this.sessionInitSeen = false;
     // Position at end — only emit events that happen from now on.
     // history() reads back to this position for late-joiner replay.
     try { this.filePos = fs.statSync(filePath).size; } catch { this.filePos = 0; }
@@ -160,10 +178,25 @@ export class ClaudeSessionAdapter extends EventEmitter implements AgentAdapter {
     fs.closeSync(fd);
     this.filePos = size;
 
-    for (const line of buf.toString("utf8").split("\n")) {
+    const text = buf.toString("utf8");
+    process.stderr.write(`[adapter] +${len}B from ${path.basename(this.currentFile)}\n`);
+
+    let sawMode = false;
+    for (const line of text.split("\n")) {
+      try {
+        const r = JSON.parse(line);
+        // Claude writes a "mode" record when it initialises or resumes a session.
+        // Use it as the signal to replay history that was in the file before we attached.
+        if (r.type === "mode") sawMode = true;
+      } catch { /* not JSON or empty line */ }
       for (const ev of parseLine(line, this.toolNames)) {
         this.emit("agent_event", ev);
       }
+    }
+
+    if (sawMode && !this.sessionInitSeen) {
+      this.sessionInitSeen = true;
+      this.emit("session_resumed");
     }
   }
 
