@@ -66,6 +66,32 @@ already share a voice channel (same room, a huddle, Slack), so chat duplicates a
 channel they have and advances nothing this tool uniquely does. **Chat is
 deferred,** and when it does come, it lives in the web UI, never the CLI.
 
+## Decided: remote participants observe + suggest — they never drive
+
+The synchronous collaboration model is settled. A remote teammate joining over a
+link can **watch the structured session and post suggestions** — nothing more.
+The driver seat (typing into the host's shell/Claude) stays **local to the host
+machine** and is never handed to a remote participant.
+
+Why this is right, at least to start:
+
+- It already removes the broken-telephone loop. The teammate sees the session
+  (findings *out*) and their suggestions flow in for the host to accept (response
+  *back*). The whole origin pain, solved, without remote shell access.
+- It collapses the security problem. "Go to the internet" stops being a remote
+  arbitrary-code-execution project and becomes "let people watch and suggest" —
+  a fundamentally safe thing to expose.
+- The host's **accept** is the trust boundary: nothing a remote participant does
+  executes until the local human accepts it. Review-then-apply, like merging a PR.
+
+**This is now implemented.** The daemon mints two tokens per session: a control
+token (host only, never shared) and an observer token (the shareable link).
+Capability is derived at WebSocket upgrade from whichever token was presented and
+stored server-side — no client message can change it. `request_control`, `input`,
+`resize`, `yield_control`, and `accept_suggestion` are silently ignored from
+observer connections. A tunnel (reachability + TLS) is the remaining piece before
+exposing sessions beyond a trusted LAN.
+
 ## The frame that ties it together: a session is an event stream
 
 Synchronous and asynchronous collaboration are **not two competing products.**
