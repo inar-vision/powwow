@@ -26,6 +26,7 @@ interface StartArgs {
   port: number;
   host: string;
   cwd: string;
+  claudeConfigDir?: string;
 }
 
 function parseStartArgs(argv: string[]): StartArgs {
@@ -50,6 +51,9 @@ function parseStartArgs(argv: string[]): StartArgs {
         break;
       case "--cwd":
         args.cwd = argv[++i] ?? args.cwd;
+        break;
+      case "--claude-config-dir":
+        args.claudeConfigDir = argv[++i];
         break;
       case "-h":
       case "--help":
@@ -278,6 +282,7 @@ async function main(): Promise<void> {
     port: args.port,
     host: args.host,
     token,
+    claudeConfigDir: args.claudeConfigDir,
   });
 
   const q = `?t=${token}`;
@@ -286,13 +291,18 @@ async function main(): Promise<void> {
   lines.push("  powwow session is live");
   lines.push(`  wrapping: ${args.cmd.join(" ")}`);
   lines.push("");
-  lines.push("  Share one of these links:");
+  lines.push("  Host (terminal view):");
   lines.push(`    this machine   http://localhost:${daemon.port}/${q}`);
   for (const ip of lanAddresses()) {
     lines.push(`    on your LAN    http://${ip}:${daemon.port}/${q}`);
   }
   lines.push("");
-  lines.push("  First to join drives. Others observe and can request control.");
+  lines.push("  Teammates (observer view):");
+  lines.push(`    this machine   http://localhost:${daemon.port}/observe${q}`);
+  for (const ip of lanAddresses()) {
+    lines.push(`    on your LAN    http://${ip}:${daemon.port}/observe${q}`);
+  }
+  lines.push("");
   lines.push("  Ctrl-C here ends the session for everyone.");
   lines.push("");
   lines.push(`  Session log: ${daemon.logFile}`);

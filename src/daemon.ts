@@ -6,6 +6,7 @@ import * as crypto from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { Session } from "./session";
 import { ClientMessage, ServerMessage, SuggestionInfo } from "./protocol";
+import { ClaudeSessionAdapter } from "./agent-adapter";
 
 // Minimal surface of a pseudo-terminal we depend on. node-pty satisfies this;
 // tests inject a fake so the relay can be exercised without native bindings.
@@ -60,6 +61,7 @@ export interface DaemonOptions {
   token: string; // shared session secret carried in the join link
   spawnPty?: SpawnPty; // override the PTY factory (used by tests)
   logDir?: string;  // override log directory (used by tests to avoid polluting ~/.powwow)
+  claudeConfigDir?: string; // override ~/.claude location (e.g. ~/.claude-2 for personal account)
 }
 
 export interface RunningDaemon {
@@ -114,6 +116,16 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   const inputBuffers = new Map<string, string>(); // driver id -> buffered line
 
   logEntry({ type: "session_start", cmd: opts.cmd, cwd: opts.cwd });
+
+  // --- agent event adapter (structured events from the AI tool's session) -
+  // Check all cmd args (not just cmd[0]) since the cmd may be prefixed with
+  // `env VAR=val` — e.g. ["env", "CLAUDE_CONFIG_DIR=...", "claude"].
+  const isClaudeLike = opts.cmd.some(
+    (arg) => !arg.includes("=") && /^claude/.test(path.basename(arg))
+  );
+  const adapter = isClaudeLike
+    ? new ClaudeSessionAdapter(opts.cwd, opts.claudeConfigDir)
+    : null;
 
   // --- spawn the wrapped agent under a PTY we fully own -------------------
   const spawnPty = opts.spawnPty ?? defaultSpawnPty;
@@ -170,13 +182,47 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     return session.snapshot().find((p) => p.id === id)?.name ?? "someone";
   }
 
+  // --- start agent adapter (if applicable) ---------------------------------
+  const AGENT_HISTORY_LIMIT = 200;
+  const agentHistory: import("./agent-adapter").AgentEvent[] = [];
+
+  if (adapter) {
+    adapter.start();
+    function replayHistory() {
+      agentHistory.length = 0;
+      for (const ev of adapter!.history()) {
+        agentHistory.push(ev);
+        if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();
+      }
+      for (const [ws] of sockets) {
+        if (ws.readyState === WebSocket.OPEN) {
+          send(ws, { type: "session_reset" });
+          for (const ev of agentHistory) {
+            send(ws, { type: "agent_event", event: ev, historical: true });
+          }
+        }
+      }
+    }
+
+    // File switch detected by the poll (new session or /resume into a different file).
+    adapter.on("session_changed", replayHistory);
+    // Claude wrote a "mode" record to the current file — it has initialised or
+    // resumed a session. Replay whatever history was in the file before we attached.
+    adapter.on("session_resumed", replayHistory);
+    adapter.on("agent_event", (event) => {
+      agentHistory.push(event);
+      if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();
+      broadcast({ type: "agent_event", event });
+    });
+  }
+
   // --- static file + token-gated HTTP server ------------------------------
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
-    // The join link must carry the right token. The page itself is harmless;
-    // the token is re-checked on the websocket upgrade where control lives.
-    if (url.pathname === "/" || url.pathname === "/index.html") {
+    // Token-gate the HTML pages; vendor assets are harmless without a token.
+    const tokenGated = ["/", "/index.html", "/observe", "/observe.html"];
+    if (tokenGated.includes(url.pathname)) {
       if (url.searchParams.get("t") !== opts.token) {
         res.writeHead(403, { "content-type": "text/plain" });
         res.end("Invalid or missing session token.");
@@ -184,7 +230,10 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       }
     }
 
-    let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
+    // /observe is an alias for /observe.html
+    let filePath = url.pathname === "/observe" ? "/observe.html"
+      : url.pathname === "/" ? "/index.html"
+      : url.pathname;
     filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
     const abs = path.join(PUBLIC_DIR, filePath);
     if (!abs.startsWith(PUBLIC_DIR)) {
@@ -273,6 +322,12 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
             suggestions: [...suggestions],
           });
           if (scrollback) send(ws, { type: "output", data: scrollback });
+          // Replay agent history for late joiners
+          if (agentHistory.length > 0) {
+            for (const event of agentHistory) {
+              send(ws, { type: "agent_event", event, historical: true });
+            }
+          }
           if (isReconnect) {
             logEntry({ type: "reconnect", id, name: displayName });
           } else {
@@ -435,6 +490,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         port: boundPort,
         logFile,
         close: () => {
+          adapter?.stop();
           try {
             term.kill();
           } catch {

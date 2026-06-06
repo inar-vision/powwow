@@ -48,6 +48,15 @@
   }
 
   // --- terminal (created on join so load failures surface cleanly) --------
+  var reflowTimer = null;
+  function reflowTerminal() {
+    clearTimeout(reflowTimer);
+    reflowTimer = setTimeout(function () {
+      if (fit) fit.fit();
+      maybeSendResize();
+    }, 50);
+  }
+
   function initTerminal() {
     if (typeof Terminal === "undefined") {
       throw new Error("terminal library failed to load (check /vendor/xterm.js)");
@@ -63,7 +72,11 @@
       term.loadAddon(fit);
     }
     term.open(document.getElementById("terminal"));
-    if (fit) fit.fit();
+    // Defer fit() so the browser has time to reflow after the overlay hides.
+    requestAnimationFrame(function () {
+      if (fit) fit.fit();
+      maybeSendResize();
+    });
 
     term.onData(function (data) {
       if (amDriver && ws && ws.readyState === 1) {
@@ -71,14 +84,7 @@
       }
     });
 
-    var resizeTimer = null;
-    window.addEventListener("resize", function () {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(function () {
-        if (fit) fit.fit();
-        maybeSendResize();
-      }, 120);
-    });
+    window.addEventListener("resize", reflowTerminal);
   }
 
   function maybeSendResize() {
@@ -176,10 +182,15 @@
   function renderSuggestions() {
     suggestionTray.innerHTML = "";
     if (suggestions.length === 0) {
-      suggestionTray.style.display = "none";
+      if (suggestionTray.style.display !== "none") {
+        suggestionTray.style.display = "none";
+        reflowTerminal();
+      }
       return;
     }
+    var wasHidden = suggestionTray.style.display === "none";
     suggestionTray.style.display = "";
+    if (wasHidden) reflowTerminal();
     suggestions.forEach(function (s) {
       var item = document.createElement("div");
       item.className = "suggestion-item";

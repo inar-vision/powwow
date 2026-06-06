@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>powwow — observe</title>
+    <style>
+      :root {
+        --bg:     #0d1117;
+        --panel:  #161b22;
+        --border: #30363d;
+        --text:   #e6edf3;
+        --muted:  #8b949e;
+        --accent: #2f81f7;
+        --green:  #3fb950;
+        --amber:  #d29922;
+        --purple: #a371f7;
+        --red:    #f85149;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; background: var(--bg); color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 14px; line-height: 1.5; }
+
+      #app { display: flex; flex-direction: column; height: 100vh; }
+
+      /* ── header ── */
+      header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 8px 14px;
+        background: var(--panel); border-bottom: 1px solid var(--border);
+        flex: 0 0 auto;
+      }
+      .brand { font-weight: 700; font-size: 15px; letter-spacing: .4px; }
+      .brand span { color: var(--accent); }
+      .participants { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; }
+      .chip {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 3px 9px; border-radius: 999px; font-size: 12px;
+        border: 1px solid var(--border); color: var(--muted); background: var(--bg);
+      }
+      .chip.driver { color: var(--green); border-color: var(--green); }
+      .chip.you    { box-shadow: inset 0 0 0 1px var(--accent); }
+      .chip .dot   { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+      .chip.driver .dot { background: var(--green); }
+      .tag { font-size: 11px; color: var(--muted); padding: 2px 6px;
+             border: 1px solid var(--border); border-radius: 4px; }
+
+      /* ── notice bar ── */
+      #notice {
+        padding: 5px 14px; font-size: 12px; color: var(--muted);
+        background: var(--panel); border-bottom: 1px solid var(--border);
+        flex: 0 0 auto;
+      }
+
+      /* ── join overlay ── */
+      #overlay {
+        position: fixed; inset: 0; background: rgba(13,17,23,.92);
+        display: flex; align-items: center; justify-content: center; z-index: 10;
+      }
+      .join-box {
+        background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+        padding: 32px 40px; display: flex; flex-direction: column; gap: 14px;
+        min-width: 320px;
+      }
+      .join-box h2 { font-size: 17px; font-weight: 600; }
+      .join-box p  { font-size: 13px; color: var(--muted); }
+      input[type=text] {
+        background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+        color: var(--text); font-size: 14px; padding: 8px 12px; outline: none; width: 100%;
+      }
+      input[type=text]:focus { border-color: var(--accent); }
+      button {
+        background: var(--accent); color: #fff; border: none; border-radius: 6px;
+        padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+      }
+      button:hover { opacity: .88; }
+      button.secondary {
+        background: transparent; color: var(--muted); border: 1px solid var(--border);
+      }
+
+      /* ── feed ── */
+      #feed {
+        flex: 1; overflow-y: auto; padding: 20px 0;
+        display: flex; flex-direction: column; gap: 2px;
+      }
+      #feed > * { flex-shrink: 0; }
+
+      .event {
+        padding: 6px 20px; display: flex; gap: 12px; align-items: flex-start;
+      }
+      .event-icon {
+        width: 22px; height: 22px; border-radius: 50%; flex: 0 0 22px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 11px; font-weight: 700; margin-top: 1px;
+      }
+      .event-body { flex: 1; min-width: 0; }
+      .event-label {
+        font-size: 11px; font-weight: 600; letter-spacing: .4px;
+        text-transform: uppercase; color: var(--muted); margin-bottom: 3px;
+      }
+      .event-text { color: var(--text); word-break: break-word; }
+      .event-sub  { font-size: 12px; color: var(--muted); margin-top: 4px;
+                    font-family: ui-monospace, Menlo, monospace; }
+
+      /* user message */
+      .ev-user .event-icon { background: rgba(163,113,247,.18); color: var(--purple); }
+      .ev-user .event-label { color: var(--purple); }
+      .ev-user .event-text  { font-weight: 500; }
+
+      /* thinking */
+      .ev-thinking .event-icon { background: rgba(139,148,158,.12); color: var(--muted); }
+      .ev-thinking .event-text { color: var(--muted); font-style: italic; font-size: 13px; }
+
+      /* claude text response */
+      .ev-text .event-icon { background: rgba(47,129,247,.15); color: var(--accent); }
+      .ev-text .event-label { color: var(--accent); }
+      .ev-text .event-text  { white-space: pre-wrap; }
+
+      /* tool call */
+      .ev-tool {
+        margin: 6px 20px;
+        background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+        overflow: hidden;
+      }
+      .ev-tool-header {
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 14px; border-bottom: 1px solid var(--border);
+      }
+      .tool-badge {
+        font-size: 11px; font-weight: 700; letter-spacing: .5px;
+        text-transform: uppercase; padding: 2px 7px; border-radius: 4px;
+      }
+      .tool-bash   { background: rgba(248,81,73,.15);  color: var(--red);    }
+      .tool-read   { background: rgba(47,129,247,.15); color: var(--accent); }
+      .tool-write  { background: rgba(63,185,80,.15);  color: var(--green);  }
+      .tool-edit   { background: rgba(210,153,34,.15); color: var(--amber);  }
+      .tool-other  { background: rgba(139,148,158,.12); color: var(--muted); }
+      .tool-input  {
+        font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+        color: var(--muted); flex: 1; overflow: hidden;
+        white-space: nowrap; text-overflow: ellipsis;
+      }
+      .ev-tool-result {
+        padding: 8px 14px; font-family: ui-monospace, Menlo, monospace;
+        font-size: 12px; color: var(--muted); white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .ev-tool-result.error { color: var(--red); }
+      .expand-toggle {
+        background: none; border: 1px solid var(--border); border-radius: 4px;
+        color: var(--muted); font-size: 11px; padding: 1px 7px; cursor: pointer;
+        flex: 0 0 auto; white-space: nowrap;
+      }
+      .expand-toggle:hover { color: var(--text); border-color: var(--muted); }
+
+      /* history / live separator */
+      .ev-separator {
+        margin: 12px 20px; display: flex; align-items: center; gap: 10px;
+        font-size: 11px; color: var(--muted); letter-spacing: .5px; text-transform: uppercase;
+      }
+      .ev-separator::before, .ev-separator::after {
+        content: ""; flex: 1; height: 1px; background: var(--border);
+      }
+
+      /* session events */
+      .ev-session {
+        margin: 8px 20px; padding: 6px 12px;
+        background: rgba(48,54,61,.4); border-radius: 6px;
+        font-size: 12px; color: var(--muted); text-align: center;
+      }
+
+      /* ── suggestion area ── */
+      #suggest-area {
+        flex: 0 0 auto; border-top: 1px solid var(--border);
+        background: var(--panel); padding: 10px 14px;
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      #suggestion-tray {
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .sugg-item {
+        display: flex; align-items: center; gap: 8px;
+        background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+        padding: 6px 10px; font-size: 12px;
+      }
+      .sugg-from { color: var(--purple); font-weight: 600; flex: 0 0 auto; }
+      .sugg-text { color: var(--muted); flex: 1; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; }
+      .sugg-mine { color: var(--amber); font-size: 11px; }
+      .sugg-retract {
+        background: transparent; color: var(--muted); border: 1px solid var(--border);
+        font-size: 11px; padding: 2px 7px;
+      }
+      .suggest-row { display: flex; gap: 8px; }
+      #suggest-input {
+        flex: 1; font-family: inherit;
+      }
+      #suggest-btn { flex: 0 0 auto; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="brand">pow<span>wow</span></div>
+        <div class="participants" id="participants"></div>
+        <span class="tag" id="session-tag">observer</span>
+      </header>
+
+      <div id="notice">Connecting…</div>
+
+      <div id="feed"></div>
+
+      <div id="suggest-area">
+        <div id="suggestion-tray"></div>
+        <div class="suggest-row">
+          <input type="text" id="suggest-input" placeholder="Suggest a prompt to the driver…" />
+          <button id="suggest-btn">Suggest →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- join overlay -->
+    <div id="overlay">
+      <div class="join-box">
+        <h2>Join session</h2>
+        <p>You'll observe the live coding session and can suggest prompts to the driver.</p>
+        <input type="text" id="name-input" placeholder="Your name" maxlength="40" />
+        <button id="join-btn">Join as observer</button>
+      </div>
+    </div>
+
+    <script>
+    (function () {
+      "use strict";
+
+      var token = new URLSearchParams(location.search).get("t") || "";
+      var youId = null;
+      var driverId = null;
+      var currentName = "";
+      var suggestions = [];
+      var ws = null;
+      var reconnectAttempts = 0;
+      var MAX_RECONNECT = 5;
+      var autoScroll = true;
+      var receivingHistory = false;
+
+      var overlay     = document.getElementById("overlay");
+      var nameInput   = document.getElementById("name-input");
+      var joinBtn     = document.getElementById("join-btn");
+      var noticeEl    = document.getElementById("notice");
+      var feedEl      = document.getElementById("feed");
+      var participantsEl = document.getElementById("participants");
+      var sessionTag  = document.getElementById("session-tag");
+      var suggestionTray = document.getElementById("suggestion-tray");
+      var suggestInput = document.getElementById("suggest-input");
+      var suggestBtn  = document.getElementById("suggest-btn");
+
+      // Track auto-scroll: pause if user scrolled up
+      feedEl.addEventListener("scroll", function () {
+        var atBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 40;
+        autoScroll = atBottom;
+      });
+      function scrollToBottom() {
+        if (autoScroll) feedEl.scrollTop = feedEl.scrollHeight;
+      }
+
+      // ── presence ──────────────────────────────────────────────────────────
+      function renderParticipants(list) {
+        var seen = {};
+        list.forEach(function (p) {
+          seen[p.id] = true;
+          var chip = participantsEl.querySelector('[data-pid="' + p.id + '"]');
+          if (!chip) {
+            chip = document.createElement("span");
+            chip.dataset.pid = p.id;
+            var dot = document.createElement("span");
+            dot.className = "dot";
+            var label = document.createElement("span");
+            label.className = "chip-label";
+            chip.appendChild(dot);
+            chip.appendChild(label);
+            participantsEl.appendChild(chip);
+          }
+          var cls = "chip";
+          if (p.isDriver) cls += " driver";
+          if (p.id === youId) cls += " you";
+          chip.className = cls;
+          var text = p.name + (p.id === youId ? " (you)" : "");
+          if (p.isDriver) text += " · driving";
+          chip.querySelector(".chip-label").textContent = text;
+        });
+        Array.from(participantsEl.querySelectorAll("[data-pid]")).forEach(function (chip) {
+          if (!seen[chip.dataset.pid]) participantsEl.removeChild(chip);
+        });
+      }
+
+      // ── suggestion tray ───────────────────────────────────────────────────
+      function renderSuggestions() {
+        suggestionTray.innerHTML = "";
+        suggestions.forEach(function (s) {
+          var item = document.createElement("div");
+          item.className = "sugg-item";
+
+          var from = document.createElement("span");
+          from.className = "sugg-from";
+          from.textContent = s.fromName + ":";
+
+          var text = document.createElement("span");
+          text.className = "sugg-text";
+          text.textContent = s.text;
+          text.title = s.text;
+
+          item.appendChild(from);
+          item.appendChild(text);
+
+          if (s.fromId === youId) {
+            var mine = document.createElement("span");
+            mine.className = "sugg-mine";
+            mine.textContent = "pending";
+            item.appendChild(mine);
+
+            var retract = document.createElement("button");
+            retract.className = "sugg-retract";
+            retract.textContent = "Retract";
+            (function (sid) {
+              retract.onclick = function () {
+                wsSend({ type: "dismiss_suggestion", id: sid });
+              };
+            })(s.id);
+            item.appendChild(retract);
+          }
+
+          suggestionTray.appendChild(item);
+        });
+      }
+
+      function submitSuggestion() {
+        var text = (suggestInput.value || "").trim();
+        if (!text) return;
+        wsSend({ type: "suggest", text: text });
+        suggestInput.value = "";
+      }
+
+      // ── activity feed ─────────────────────────────────────────────────────
+
+      // Keeps a reference to the last tool-call card so the result can be appended.
+      var lastToolCard = null;
+
+      function addSessionEvent(text) {
+        lastToolCard = null;
+        var el = document.createElement("div");
+        el.className = "ev-session";
+        el.textContent = text;
+        feedEl.appendChild(el);
+        scrollToBottom();
+      }
+
+      function addSeparator(label) {
+        var el = document.createElement("div");
+        el.className = "ev-separator";
+        el.textContent = label;
+        feedEl.appendChild(el);
+        scrollToBottom();
+      }
+
+      function toolBadgeClass(tool) {
+        switch (tool.toLowerCase()) {
+          case "bash":    return "tool-bash";
+          case "read":    return "tool-read";
+          case "write":   return "tool-write";
+          case "edit":    return "tool-edit";
+          default:        return "tool-other";
+        }
+      }
+
+      function toolSummary(tool, input) {
+        var t = tool.toLowerCase();
+        if (t === "bash")  return input.command || "";
+        if (t === "read")  return input.file_path || "";
+        if (t === "write") return input.file_path || "";
+        if (t === "edit")  return input.file_path || "";
+        // Generic: show first key's value
+        var keys = Object.keys(input || {});
+        if (keys.length) return String(input[keys[0]]).slice(0, 120);
+        return "";
+      }
+
+      function handleAgentEvent(ev) {
+        if (ev.type === "thinking") {
+          lastToolCard = null;
+          var el = document.createElement("div");
+          el.className = "event ev-thinking";
+          el.innerHTML =
+            '<div class="event-icon">···</div>' +
+            '<div class="event-body"><div class="event-text">thinking…</div></div>';
+          feedEl.appendChild(el);
+          scrollToBottom();
+          return;
+        }
+
+        if (ev.type === "user_message") {
+          lastToolCard = null;
+          var driverName = driverId
+            ? (function () {
+                var chip = participantsEl.querySelector('[data-pid="' + driverId + '"] .chip-label');
+                return chip ? chip.textContent.replace(" · driving", "").replace(" (you)", "").trim() : "driver";
+              })()
+            : "driver";
+          var el = document.createElement("div");
+          el.className = "event ev-user";
+          el.innerHTML =
+            '<div class="event-icon">▶</div>' +
+            '<div class="event-body">' +
+              '<div class="event-label">' + escHtml(driverName) + '</div>' +
+              '<div class="event-text">' + escHtml(ev.text) + '</div>' +
+            '</div>';
+          feedEl.appendChild(el);
+          scrollToBottom();
+          return;
+        }
+
+        if (ev.type === "text") {
+          lastToolCard = null;
+          var el = document.createElement("div");
+          el.className = "event ev-text";
+          el.innerHTML =
+            '<div class="event-icon">◆</div>' +
+            '<div class="event-body">' +
+              '<div class="event-label">Claude</div>' +
+              '<div class="event-text">' + escHtml(ev.text) + '</div>' +
+            '</div>';
+          feedEl.appendChild(el);
+          scrollToBottom();
+          return;
+        }
+
+        if (ev.type === "tool_call") {
+          var summary = toolSummary(ev.tool, ev.input);
+          var card = document.createElement("div");
+          card.className = "ev-tool";
+          var header = document.createElement("div");
+          header.className = "ev-tool-header";
+          var badge = document.createElement("span");
+          badge.className = "tool-badge " + toolBadgeClass(ev.tool);
+          badge.textContent = ev.tool;
+          var inp = document.createElement("span");
+          inp.className = "tool-input";
+          inp.textContent = summary;
+          header.appendChild(badge);
+          header.appendChild(inp);
+          // placeholder for expand toggle — added when result arrives
+          card.appendChild(header);
+          feedEl.appendChild(card);
+          lastToolCard = card;
+          scrollToBottom();
+          return;
+        }
+
+        if (ev.type === "tool_result") {
+          var card = lastToolCard;
+          lastToolCard = null;
+          if (!card) {
+            card = document.createElement("div");
+            card.className = "ev-tool";
+            var header = document.createElement("div");
+            header.className = "ev-tool-header";
+            var badge = document.createElement("span");
+            badge.className = "tool-badge tool-other";
+            badge.textContent = ev.tool;
+            header.appendChild(badge);
+            card.appendChild(header);
+            feedEl.appendChild(card);
+          }
+          var content = ev.content || "";
+          var lines = content.split("\n");
+          var PREVIEW_LINES = 6;
+          var needsExpand = lines.length > PREVIEW_LINES;
+          var result = document.createElement("div");
+          result.className = "ev-tool-result" + (ev.isError ? " error" : "");
+          result.textContent = needsExpand ? lines.slice(0, PREVIEW_LINES).join("\n") : content;
+          card.appendChild(result);
+          if (needsExpand) {
+            // Toggle button lives in the header, always visible
+            var hdr = card.querySelector(".ev-tool-header");
+            var btn = document.createElement("button");
+            btn.className = "expand-toggle";
+            btn.textContent = "▼ " + lines.length + " lines";
+            hdr.appendChild(btn);
+            (function (resultEl, btnEl, allLines, previewLines) {
+              var expanded = false;
+              btnEl.onclick = function () {
+                expanded = !expanded;
+                resultEl.textContent = expanded ? allLines.join("\n") : previewLines.join("\n");
+                btnEl.textContent = expanded ? "▲ collapse" : "▼ " + allLines.length + " lines";
+              };
+            })(result, btn, lines, lines.slice(0, PREVIEW_LINES));
+          }
+          scrollToBottom();
+          return;
+        }
+      }
+
+      function escHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+
+      // ── websocket ─────────────────────────────────────────────────────────
+      function wsSend(obj) {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+      }
+
+      function connect(name) {
+        var proto = location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(proto + "://" + location.host + "/ws?t=" + encodeURIComponent(token));
+
+        ws.onopen = function () {
+          var hello = { type: "hello", name: name };
+          var cid = sessionStorage.getItem("powwow_obs_cid");
+          if (cid) hello.clientId = cid;
+          ws.send(JSON.stringify(hello));
+        };
+
+        ws.onmessage = function (ev) {
+          var msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+
+          switch (msg.type) {
+            case "init":
+              youId = msg.youId;
+              driverId = msg.driverId;
+              suggestions = msg.suggestions || [];
+              reconnectAttempts = 0;
+              if (msg.clientId) sessionStorage.setItem("powwow_obs_cid", msg.clientId);
+              renderParticipants(msg.participants);
+              renderSuggestions();
+              noticeEl.textContent = "Connected — observing live session.";
+              break;
+
+            case "presence":
+              driverId = msg.driverId;
+              renderParticipants(msg.participants);
+              break;
+
+            case "notice":
+              noticeEl.textContent = msg.text;
+              break;
+
+            case "agent_event":
+              if (msg.historical && !receivingHistory) {
+                receivingHistory = true;
+                addSeparator("session history");
+              }
+              if (!msg.historical && receivingHistory) {
+                receivingHistory = false;
+                addSeparator("live");
+              }
+              handleAgentEvent(msg.event);
+              break;
+
+            case "suggestion":
+              suggestions.push(msg.suggestion);
+              renderSuggestions();
+              break;
+
+            case "suggestion_cleared":
+              suggestions = suggestions.filter(function (s) { return s.id !== msg.id; });
+              renderSuggestions();
+              break;
+
+            case "session_reset":
+              feedEl.innerHTML = "";
+              lastToolCard = null;
+              receivingHistory = false;
+              addSessionEvent("New Claude session started.");
+              break;
+
+            case "exit":
+              addSessionEvent("Session ended" + (msg.code != null ? " (exit " + msg.code + ")" : "") + ".");
+              noticeEl.textContent = "The session has ended.";
+              break;
+          }
+        };
+
+        ws.onclose = function () {
+          if (reconnectAttempts < MAX_RECONNECT && youId) {
+            reconnectAttempts++;
+            noticeEl.textContent = "Reconnecting… (" + reconnectAttempts + "/" + MAX_RECONNECT + ")";
+            setTimeout(function () { connect(currentName); }, 1500);
+          } else {
+            noticeEl.textContent = "Disconnected.";
+          }
+        };
+
+        ws.onerror = function () {
+          noticeEl.textContent = "Connection error.";
+        };
+      }
+
+      // ── join ──────────────────────────────────────────────────────────────
+      function join() {
+        var name = (nameInput.value || "").trim() || "anon";
+        currentName = name;
+        overlay.style.display = "none";
+        connect(name);
+      }
+
+      joinBtn.addEventListener("click", join);
+      nameInput.addEventListener("keydown", function (e) { if (e.key === "Enter") join(); });
+      suggestBtn.addEventListener("click", submitSuggestion);
+      suggestInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); submitSuggestion(); }
+      });
+
+      nameInput.focus();
+    })();
+    </script>
+  </body>
+</html>
