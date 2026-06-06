@@ -464,32 +464,33 @@
             card.appendChild(header);
             feedEl.appendChild(card);
           }
-          var PREVIEW = 400;
           var content = ev.content || "";
-          var needsExpand = content.length > PREVIEW;
+          var lines = content.split("\n");
+          var PREVIEW_LINES = 6;
+          var needsExpand = lines.length > PREVIEW_LINES;
           var result = document.createElement("div");
           result.className = "ev-tool-result" + (ev.isError ? " error" : "");
-          result.textContent = needsExpand ? content.slice(0, PREVIEW) : content;
+          result.textContent = needsExpand ? lines.slice(0, PREVIEW_LINES).join("\n") : content;
           card.appendChild(result);
           if (needsExpand) {
             var btn = document.createElement("button");
             btn.className = "expand-btn";
-            btn.textContent = "▼ show all (" + content.length + " chars)";
-            (function (resultEl, btnEl, full) {
+            btn.textContent = "▼ show all (" + lines.length + " lines)";
+            (function (resultEl, btnEl, allLines, previewLines) {
               btnEl.onclick = function () {
                 if (resultEl.classList.contains("expanded")) {
                   resultEl.classList.remove("expanded");
-                  resultEl.textContent = full.slice(0, PREVIEW);
-                  resultEl.appendChild(btnEl); // keep btn inside result for layout
-                  btnEl.textContent = "▼ show all (" + full.length + " chars)";
+                  resultEl.textContent = previewLines.join("\n");
+                  resultEl.appendChild(btnEl);
+                  btnEl.textContent = "▼ show all (" + allLines.length + " lines)";
                 } else {
                   resultEl.classList.add("expanded");
-                  resultEl.textContent = full;
+                  resultEl.textContent = allLines.join("\n");
                   resultEl.appendChild(btnEl);
                   btnEl.textContent = "▲ collapse";
                 }
               };
-            })(result, btn, content);
+            })(result, btn, lines, lines.slice(0, PREVIEW_LINES));
             result.appendChild(btn);
           }
           scrollToBottom();

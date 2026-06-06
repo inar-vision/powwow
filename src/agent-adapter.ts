@@ -96,6 +96,7 @@ export class ClaudeSessionAdapter extends EventEmitter implements AgentAdapter {
       if (candidate !== this.currentFile && fs.existsSync(candidate)) {
         this.detachFileWatcher();
         this.toolNames.clear();
+        this.emit("new_session");
         this.attachToFile(candidate);
       }
     });
