@@ -1,6 +1,6 @@
 # powwow
 
-<img src="powwow_stacked_2.jpg" alt="Two browser windows sharing a live Claude Code session" width="700">
+<img src="powwow_stacked_2.jpg" alt="Two browser windows sharing a live Claude Code session">
 
 Share a live agentic coding session with your team. One person drives, everyone
 else watches in the browser, and anyone can request control. Turn-taking is
