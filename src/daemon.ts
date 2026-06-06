@@ -188,11 +188,6 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   if (adapter) {
     adapter.start();
-    // Seed replay buffer with events that already happened this session
-    for (const ev of adapter.history()) {
-      agentHistory.push(ev);
-      if (agentHistory.length > AGENT_HISTORY_LIMIT) agentHistory.shift();
-    }
     adapter.on("new_session", () => {
       agentHistory.length = 0;
       broadcast({ type: "session_reset" });
