@@ -26,6 +26,7 @@ interface StartArgs {
   port: number;
   host: string;
   cwd: string;
+  claudeConfigDir?: string;
 }
 
 function parseStartArgs(argv: string[]): StartArgs {
@@ -50,6 +51,9 @@ function parseStartArgs(argv: string[]): StartArgs {
         break;
       case "--cwd":
         args.cwd = argv[++i] ?? args.cwd;
+        break;
+      case "--claude-config-dir":
+        args.claudeConfigDir = argv[++i];
         break;
       case "-h":
       case "--help":
@@ -278,6 +282,7 @@ async function main(): Promise<void> {
     port: args.port,
     host: args.host,
     token,
+    claudeConfigDir: args.claudeConfigDir,
   });
 
   const q = `?t=${token}`;
