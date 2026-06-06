@@ -30,5 +30,5 @@ if [ -f "$REGISTRY" ]; then
   fi
 fi
 
-# Start relay in background; it writes the registry and opens the browser
-node "$POWWOW_CLI" serve --cwd "$CWD" &
+# Start relay (detaches by default; writes registry, opens browser, exits)
+node "$POWWOW_CLI" serve --cwd "$CWD"

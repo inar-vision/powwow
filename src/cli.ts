@@ -87,13 +87,13 @@ Start options:
 Serve options:
   --port <n>              Port to listen on (default: 4321)
   --cwd <dir>             Working directory of the Claude session (default: cwd)
-  --detach                Fork relay to background, print observer URL, exit
+  --foreground            Run in foreground instead of detaching (for debugging)
   --claude-config-dir     Override Claude config directory (default: ~/.claude)
 
 Examples:
   powwow start                       # share a bash session
   powwow start --cmd "claude"        # share a Claude Code session
-  powwow serve --detach              # start relay in background (used by /powwow)
+  powwow serve                       # start relay in background (default)
   powwow setup                       # install the /powwow slash command
   powwow log                         # list sessions
   powwow log 1                       # show the most recent session
@@ -305,7 +305,7 @@ function openInBrowser(url: string): void {
   exec(cmd, (err) => { if (err) console.error("  Could not auto-open browser:", err.message); });
 }
 
-interface ServeArgs { port: number; host: string; cwd: string; claudeConfigDir?: string; detach?: boolean; }
+interface ServeArgs { port: number; host: string; cwd: string; claudeConfigDir?: string; foreground?: boolean; }
 
 function parseServeArgs(argv: string[]): ServeArgs {
   const args: ServeArgs = { port: 4321, host: "0.0.0.0", cwd: process.cwd() };
@@ -315,7 +315,9 @@ function parseServeArgs(argv: string[]): ServeArgs {
       case "--host": args.host = argv[++i] ?? args.host; break;
       case "--cwd":  args.cwd  = argv[++i] ?? args.cwd; break;
       case "--claude-config-dir": args.claudeConfigDir = argv[++i]; break;
-      case "--detach": args.detach = true; break;
+      case "--foreground": args.foreground = true; break;
+      // kept for back-compat with existing hook scripts
+      case "--detach": break;
     }
   }
   return args;
@@ -336,16 +338,16 @@ function printShareLinks(port: number, token: string): string {
 async function cmdServe(argv: string[]): Promise<void> {
   const args = parseServeArgs(argv);
 
-  if (args.detach) {
-    // If already running, print the URL and exit without starting another.
+  if (!args.foreground) {
+    // Default: detach. If already running, just print the URL and exit.
     const existing = readRegistry(args.cwd);
     if (existing && isProcessAlive(existing.pid)) {
       printShareLinks(existing.port, existing.token);
-      return;
+      process.exit(0);
     }
-    // Fork self without --detach, fully detached from this process.
+    // Fork self with --foreground, fully detached from this process.
     const spawnArgs = [
-      path.resolve(__dirname, "cli.js"), "serve",
+      path.resolve(__dirname, "cli.js"), "serve", "--foreground",
       "--cwd", args.cwd,
       "--port", String(args.port),
       "--host", args.host,
@@ -370,7 +372,7 @@ async function cmdServe(argv: string[]): Promise<void> {
     return;
   }
 
-  // Idempotent: if a relay is already running for this cwd, do nothing.
+  // --foreground: blocking mode. Idempotent: exit if already running.
   const existing = readRegistry(args.cwd);
   if (existing && isProcessAlive(existing.pid)) {
     process.exit(0);
@@ -467,7 +469,7 @@ function cmdSetup(argv: string[]): void {
   fs.mkdirSync(commandsDir, { recursive: true });
 
   const cliPath = path.resolve(__dirname, "cli.js");
-  const serveCmd = `node ${cliPath} serve --cwd "$PWD" --detach`
+  const serveCmd = `node ${cliPath} serve --cwd "$PWD"`
     + (idx !== -1 ? ` --claude-config-dir ${claudeConfigDir}` : "");
 
   const content = [
