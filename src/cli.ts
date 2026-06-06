@@ -72,7 +72,7 @@ Usage:
   powwow start [options]   Start a session (wraps a command in a PTY)
   powwow serve [options]   Start relay without PTY (attach to running Claude)
   powwow stop [--all]      Stop session for this directory (or all sessions)
-  powwow setup             Install /powwow Claude Code slash command
+  powwow setup [--claude-config-dir <dir>]   Install /powwow slash command
   powwow log               List recorded sessions
   powwow log <n>           Show nth most recent session (1 = latest)
   powwow log <filename>    Show a specific .jsonl file
@@ -458,23 +458,28 @@ function cmdStop(argv: string[]): void {
   deleteRegistry(cwd);
 }
 
-function cmdSetup(): void {
-  const commandsDir = path.join(os.homedir(), ".claude", "commands");
+function cmdSetup(argv: string[]): void {
+  let claudeConfigDir = path.join(os.homedir(), ".claude");
+  const idx = argv.indexOf("--claude-config-dir");
+  if (idx !== -1) claudeConfigDir = argv[idx + 1] ?? claudeConfigDir;
+
+  const commandsDir = path.join(claudeConfigDir, "commands");
   fs.mkdirSync(commandsDir, { recursive: true });
 
   const cliPath = path.resolve(__dirname, "cli.js");
+  const serveCmd = `node ${cliPath} serve --cwd "$PWD" --detach`
+    + (idx !== -1 ? ` --claude-config-dir ${claudeConfigDir}` : "");
+
   const content = [
     "Start a powwow sharing session so teammates can observe this Claude session in real time.",
     "",
     "Use the Bash tool to run:",
     "",
     "```bash",
-    `node ${cliPath} serve --cwd "$PWD" --detach`,
+    serveCmd,
     "```",
     "",
     "Share the observer URL from the output with your teammates. The host companion will open automatically in your browser.",
-    "",
-    "If you use a non-default Claude config directory, append `--claude-config-dir <path>` to the command above.",
   ].join("\n");
 
   const dest = path.join(commandsDir, "powwow.md");
@@ -500,7 +505,7 @@ async function main(): Promise<void> {
   }
 
   if (sub === "setup") {
-    cmdSetup();
+    cmdSetup(rest);
     return;
   }
 
