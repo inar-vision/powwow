@@ -19,6 +19,15 @@ CWD="$(pwd)"
 # Only run if this project has opted in by placing a .powwow file in the root
 [ -f "$CWD/.powwow" ] || exit 0
 
+# Don't race the /powwow and /powwow-stop slash commands: they manage the
+# session lifecycle themselves (including flags like --public), so jumping in
+# here would start a plain session a half-second before the command runs and
+# then immediately conflict with what the user actually asked for.
+PROMPT=$(node -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync(0,'utf8')).prompt||'')}catch{}")
+case "$PROMPT" in
+  /powwow|/powwow\ *|/powwow-stop|/powwow-stop\ *) exit 0 ;;
+esac
+
 # Check registry: if a relay is already running for this cwd, exit immediately
 SLUG=$(echo "$CWD" | sed 's|/|-|g')
 REGISTRY="$HOME/.powwow/active/$SLUG.json"
