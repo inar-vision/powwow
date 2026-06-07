@@ -564,6 +564,10 @@ function cmdSetup(argv: string[]): void {
     + ` $ARGUMENTS`;
 
   const content = [
+    "---",
+    "description: Share this session. Add --public to also open an internet link via cloudflared.",
+    "---",
+    "",
     "Run this command and reply with the observer URL from its output. Do not run any other commands.",
     "",
     "Pass --public through as an argument (e.g. `/powwow --public`) to also open",
