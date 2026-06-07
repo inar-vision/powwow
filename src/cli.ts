@@ -289,20 +289,29 @@ function cwdToRegistrySlug(cwd: string): string {
   return cwd.replace(/\//g, "-").replace(/\\/g, "-");
 }
 
-function writeRegistry(cwd: string, port: number, controlToken: string, observerToken: string, tunnelUrl?: string): void {
+function writeRegistry(
+  cwd: string, port: number, controlToken: string, observerToken: string,
+  tunnelUrl?: string, tunnelError?: string,
+): void {
   fs.mkdirSync(ACTIVE_DIR, { recursive: true });
   const file = path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`);
-  // `tunnelUrl` is always written explicitly (string | null), never omitted —
-  // its mere presence in the file is how a polling reader knows the tunnel
-  // attempt (if any) has concluded, success or failure.
-  fs.writeFileSync(file, JSON.stringify({ port, controlToken, observerToken, tunnelUrl: tunnelUrl ?? null, pid: process.pid }));
+  // `tunnelUrl`/`tunnelError` are always written explicitly (string | null),
+  // never omitted — their mere presence in the file is how a polling reader
+  // (a detached parent with stdio:"ignore" on the child, so it can't just
+  // read stderr) knows the tunnel attempt has concluded, and why if it failed.
+  fs.writeFileSync(file, JSON.stringify({
+    port, controlToken, observerToken,
+    tunnelUrl: tunnelUrl ?? null,
+    tunnelError: tunnelError ?? null,
+    pid: process.pid,
+  }));
 }
 
 function deleteRegistry(cwd: string): void {
   try { fs.unlinkSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`)); } catch { }
 }
 
-function readRegistry(cwd: string): { port: number; controlToken: string; observerToken: string; tunnelUrl?: string | null; pid: number } | null {
+function readRegistry(cwd: string): { port: number; controlToken: string; observerToken: string; tunnelUrl?: string | null; tunnelError?: string | null; pid: number } | null {
   try {
     const data = JSON.parse(fs.readFileSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`), "utf8"));
     // Back-compat: old registry files used a single `token` field.
@@ -344,7 +353,7 @@ function parseServeArgs(argv: string[]): ServeArgs {
   return args;
 }
 
-function printShareLinks(port: number, observerToken: string, tunnelUrl?: string): string {
+function printShareLinks(port: number, observerToken: string, tunnelUrl?: string | null, tunnelError?: string | null): string {
   const lanIps = lanAddresses();
   const observerUrls = lanIps.length
     ? lanIps.map((ip) => `http://${ip}:${port}/observe?t=${observerToken}`)
@@ -359,6 +368,9 @@ function printShareLinks(port: number, observerToken: string, tunnelUrl?: string
     console.log("  Internet link is a cloudflared quick tunnel: best-effort, not");
     console.log("  authenticated by Cloudflare, no SLA. Driving stays local either way —");
     console.log("  this companion only ever copies accepted suggestions to your clipboard.\n");
+  } else if (tunnelError) {
+    console.log(`  --public was requested but no internet link was opened: ${tunnelError}`);
+    console.log("  Sharing locally/on your LAN only — see the link(s) above.\n");
   }
   return tunnelUrl ? `${tunnelUrl}/observe?t=${observerToken}` : observerUrls[0];
 }
@@ -370,7 +382,7 @@ async function cmdServe(argv: string[]): Promise<void> {
     // Default: detach. If already running, just print the URL and exit.
     const existing = readRegistry(args.cwd);
     if (existing && isProcessAlive(existing.pid)) {
-      printShareLinks(existing.port, existing.observerToken, existing.tunnelUrl ?? undefined);
+      printShareLinks(existing.port, existing.observerToken, existing.tunnelUrl, existing.tunnelError);
       process.exit(0);
     }
     // Fork self with --foreground, fully detached from this process.
@@ -394,7 +406,7 @@ async function cmdServe(argv: string[]): Promise<void> {
       // any) has concluded — wait for that before printing, so we never show
       // the share links mid-attempt and then again with the public one missing.
       if (reg && isProcessAlive(reg.pid) && (!args.public || reg.tunnelUrl !== undefined)) {
-        const primaryObserver = printShareLinks(reg.port, reg.observerToken, reg.tunnelUrl ?? undefined);
+        const primaryObserver = printShareLinks(reg.port, reg.observerToken, reg.tunnelUrl, reg.tunnelError);
         const hostUrl = `http://localhost:${reg.port}/host?t=${reg.controlToken}&obs=${encodeURIComponent(primaryObserver)}`;
         openInBrowser(hostUrl);
         process.exit(0);
@@ -426,6 +438,7 @@ async function cmdServe(argv: string[]): Promise<void> {
   const daemon = await startDaemon(daemonOpts);
 
   let tunnel: TunnelHandle | undefined;
+  let tunnelError: string | undefined;
   if (args.public) {
     try {
       tunnel = await startQuickTunnel(`http://localhost:${daemon.port}`);
@@ -434,14 +447,18 @@ async function cmdServe(argv: string[]): Promise<void> {
       // see `viaTunnel` in daemon.ts.
       daemonOpts.tunnelHost = tunnel.hostname;
     } catch (err) {
-      console.error(`\n  Could not open a public tunnel: ${(err as Error).message}`);
+      tunnelError = (err as Error).message;
+      console.error(`\n  Could not open a public tunnel: ${tunnelError}`);
       console.error("  Continuing with local/LAN sharing only.\n");
     }
   }
 
   // Written only once the tunnel attempt (if any) has resolved one way or the
   // other, so the detached parent's poll never observes a half-finished state.
-  writeRegistry(args.cwd, daemon.port, controlToken, observerToken, tunnel?.url);
+  // The default --detach run has stdio:"ignore", so `tunnelError` is the only
+  // way the failure above reaches the user — without it, --public would just
+  // silently fall back to local/LAN with no explanation.
+  writeRegistry(args.cwd, daemon.port, controlToken, observerToken, tunnel?.url, tunnelError);
 
   const lanIps = lanAddresses();
   const shareUrls = lanIps.length
