@@ -164,6 +164,59 @@ The right next move is a **dogfooding pass**: run `powwow serve` with a real
 Claude Code task as two people and write down every friction point. Let that list
 — not feature instinct — drive the sequencing of the above.
 
+## Reachability tiers and the open-core boundary
+
+A laptop behind NAT has no public IP, so **something must bridge the public
+internet to it** — this can't be eliminated, only hidden. There isn't a
+peer-to-peer escape hatch either: WebRTC still needs a signaling server *and* a
+TURN relay for the networks where direct connection fails, so it trades one
+dependency for two. That leaves three tiers, meant to coexist:
+
+1. **LAN** — no internet involved. Already works.
+2. **Tunnel (`powwow start --public`, planned)** — powwow manages a `cloudflared`
+   quick-tunnel itself so the user installs nothing. Zero infra, but it leans on
+   Cloudflare's free service at runtime: it's a *convenience* escape hatch, **not
+   yours** — you can't brand it, guarantee it, or build a business on it.
+3. **Powwow relay (planned, the product spine)** — a server the host daemon dials
+   *out* to (outbound, so NAT isn't a problem); remote browsers hit the relay,
+   which forwards over that connection.
+
+### How the relay splits across open source vs. product
+
+The relay is two separate pieces, and the split is what keeps the open-source and
+commercial stories both honest:
+
+- **Relay *client* (in the daemon)** — knows how to dial a relay URL and speak its
+  protocol. Always open source. The daemon must stay **relay-agnostic via
+  `--relay <url>`**, so a user can point at their own relay or the hosted one. This
+  single choice is what prevents lock-in and preserves local-first.
+- **Relay *server* (the forwarder)** — **ships in the open-source repo and is
+  self-hostable.** This is what answers "is the non-tunnel option in the OSS?" —
+  yes. A team can run their own relay so session bytes never transit anyone else's
+  infrastructure.
+
+The **commercial product is not the relay code** — it's the *hosted instance* of
+it: a relay you run at a branded domain with stable URLs, accounts, billing, a
+dashboard, and (later) session history as a service. Standard open-core, exactly
+the plan's "free self-hosted, flat fee for hosted." The boundary to hold:
+
+> relay forwarding logic = open source · multi-tenant accounts / billing /
+> dashboard = proprietary
+
+Decide the precise line only when the relay is actually built; nothing now forces
+it. Two things to keep disciplined when that day comes: (a) the **daemon↔relay
+protocol is one spec** shared by the OSS relay and the hosted one — never fork
+them; (b) a **self-hostable relay is an enterprise *feature*, not a giveaway** —
+privacy-sensitive teams pay precisely because their code never leaves their own
+infrastructure (bring-your-own-relay / on-prem). End-to-end encryption between
+host and observers, so even the relay can't read content, is a possible later
+hardening (it complicates rendering the observer feed, so it's out of scope for
+now).
+
+The tiers don't compete: the tunnel needs no server of yours, the relay needs no
+third party, and both sit above plain LAN. `--public` is the near-term win;
+the relay is the product spine.
+
 ## Holding it in your head
 
 - The **live room** is the MVP, and it's done.

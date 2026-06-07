@@ -337,6 +337,65 @@ async function main() {
   daemon5.close();
   await sleep(100);
 
+  // --- public tunnel: control capability confined to localhost/LAN ---------
+  // A `--public` session sets `tunnelHost` to the cloudflared hostname; the
+  // daemon must refuse "control" auth on requests bearing that Host header,
+  // even with a correct token — driving must never work through the public
+  // link (see `viaTunnel` in daemon.ts). Observer auth is unaffected.
+
+  const TUNNEL_HOST = "random-words.trycloudflare.com";
+  const daemon6 = await startDaemon({
+    cmd: ["fake"],
+    cwd: process.cwd(),
+    port: 0,
+    host: "127.0.0.1",
+    token: "ctrl6",
+    observerToken: "obs6",
+    spawnPty: fakeSpawn,
+    logDir: os.tmpdir(),
+    tunnelHost: TUNNEL_HOST,
+  });
+
+  function rawRequest(port: number, requestText: string): Promise<string> {
+    return new Promise((resolve) => {
+      const net = require("net") as typeof import("net");
+      const sock = net.createConnection(port, "127.0.0.1", () => sock.write(requestText));
+      let resp = "";
+      sock.on("data", (d) => { resp += d.toString(); });
+      sock.on("close", () => resolve(resp));
+      sock.on("error", () => resolve(resp));
+      setTimeout(() => sock.destroy(), 500);
+    });
+  }
+  const wsUpgradeReq = (host: string, token: string) =>
+    `GET /ws?t=${token} HTTP/1.1\r\n` +
+    `Host: ${host}\r\n` +
+    "Upgrade: websocket\r\n" +
+    "Connection: Upgrade\r\n" +
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+    "Sec-WebSocket-Version: 13\r\n\r\n";
+  const pageReq = (host: string, pathAndQuery: string) =>
+    `GET ${pathAndQuery} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`;
+
+  const tunnelWsResp = await rawRequest(daemon6.port, wsUpgradeReq(TUNNEL_HOST, "ctrl6"));
+  check(tunnelWsResp.startsWith("HTTP/1.1 403"),
+    "tunnel host: control WS upgrade refused even with a valid control token");
+
+  const localWsResp = await rawRequest(daemon6.port, wsUpgradeReq(`127.0.0.1:${daemon6.port}`, "ctrl6"));
+  check(localWsResp.startsWith("HTTP/1.1 101"),
+    "local host: control WS upgrade still works with the same token");
+
+  const tunnelPageResp = await rawRequest(daemon6.port, pageReq(TUNNEL_HOST, `/?t=ctrl6`));
+  check(tunnelPageResp.startsWith("HTTP/1.1 403"),
+    "tunnel host: control page refused even with a valid control token");
+
+  const tunnelObserveResp = await rawRequest(daemon6.port, pageReq(TUNNEL_HOST, `/observe?t=obs6`));
+  check(tunnelObserveResp.startsWith("HTTP/1.1 200"),
+    "tunnel host: observer page unaffected, still reachable through the tunnel");
+
+  daemon6.close();
+  await sleep(100);
+
   console.log("");
   console.log(failures === 0 ? "All relay checks passed." : failures + " check(s) failed.");
   process.exit(failures === 0 ? 0 : 1);

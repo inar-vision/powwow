@@ -64,6 +64,9 @@ export interface DaemonOptions {
   logDir?: string;  // override log directory (used by tests to avoid polluting ~/.powwow)
   claudeConfigDir?: string; // override ~/.claude location (e.g. ~/.claude-2 for personal account)
   serveMode?: boolean; // no PTY — just JSONL adapter + WebSocket; used with Claude Code hooks
+  tunnelHost?: string; // public tunnel hostname (e.g. "x.trycloudflare.com"); when set,
+                       // the control token is refused on requests bearing this Host —
+                       // driving stays confined to localhost/LAN even if it leaks
   pingIntervalMs?: number; // WebSocket keepalive interval in ms (default 30000; set low for tests)
   maxConnections?: number; // max concurrent WebSocket connections (default 20)
   suggestRateMs?: number;  // min ms between suggestions per poster (default 1500; set 0 for tests)
@@ -239,6 +242,17 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   }
 
   // --- static file + token-gated HTTP server ------------------------------
+
+  // Driving must stay confined to localhost/LAN: a public tunnel proxies the
+  // whole port, so without this check a leaked control token would grant
+  // remote shell access from anywhere on the internet. Comparing the inbound
+  // Host header against the known tunnel hostname turns "host stays on
+  // localhost" from a printing convention into something the server enforces —
+  // the control token simply does nothing when presented through the tunnel.
+  function viaTunnel(req: http.IncomingMessage): boolean {
+    return !!opts.tunnelHost && req.headers.host === opts.tunnelHost;
+  }
+
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
@@ -247,7 +261,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     // Observer token gates the shareable link pages.
     const observerPages = ["/observe", "/observe.html"];
     if (controlPages.includes(url.pathname)) {
-      if (url.searchParams.get("t") !== opts.token) {
+      if (viaTunnel(req) || url.searchParams.get("t") !== opts.token) {
         res.writeHead(403, { "content-type": "text/plain" });
         res.end("Invalid or missing session token.");
         return;
@@ -302,7 +316,7 @@ export function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     }
     const t = url.searchParams.get("t");
     const cap: Capability | null =
-      t === opts.token ? "control" :
+      t === opts.token && !viaTunnel(req) ? "control" :
       t === opts.observerToken ? "observer" :
       null;
     if (!cap) {

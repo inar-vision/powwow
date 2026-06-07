@@ -53,10 +53,37 @@ What's missing, in priority order:
 **Tier 1 — will bite a real remote session:**
 
 1. ~~**WebSocket keepalive (ping/pong).**~~ **Done.** Server pings all sockets every 30 s; misses a pong → terminate. Tunnel/proxy idle-kill is neutralised.
-2. **Reachability ergonomics (nice-to-have).** The CLI only prints localhost/LAN
-   links, so over a tunnel the host hand-composes `https://<tunnel>/observe?t=…`.
-   A `--public-url` / `--base-url` flag that makes the printed "Teammates" link
-   the real tunnel URL would remove the friction. Not required (see DOGFOOD.md).
+2. **Reachability without a manual install — `powwow start --public` (DECIDED, next to build).**
+   Requiring users to install `cloudflared` themselves feels wrong for a product.
+   The fix is to make the tunnel invisible: powwow manages a `cloudflared`
+   quick-tunnel binary itself (prefer one on `PATH`, else download-on-first-use
+   into `~/.powwow/bin`, verified against Cloudflare's published checksums and
+   pinned to a known-good version — fail closed, never start a tunnel from an
+   unverified binary), spawns it on `--public`, parses the
+   `https://<random>.trycloudflare.com` URL from its stderr, and prints the ready
+   `…/observe?t=<observerToken>` link with a one-line caveat that quick tunnels
+   are best-effort/unauthenticated/rate-limited (no SLA — Cloudflare can reclaim
+   the URL or throttle it any time). It dies with the daemon; no auto-restart
+   (a relaunch gets a fresh random URL anyway, so "restart" would just confuse).
+   Honest caveat: this still leans on Cloudflare's free service at runtime, so
+   it's the *convenience* tier — see the relay bet below for the self-hosted/product
+   tier. Manual tunnel (DOGFOOD.md) remains the fallback. Reachability can't be
+   eliminated (a laptop behind NAT needs something to bridge the public internet
+   to it) — only hidden.
+
+   **Security design decision — driving stays local, even with the control token.**
+   Cloudflared proxies the *whole port*, so "host stays on localhost" can't be
+   just a printing convention — the control-token-gated routes (driver/shell
+   access, i.e. remote code execution) would otherwise be reachable through the
+   same public URL the observer link uses. Since the daemon spawns `cloudflared`
+   itself, it knows the tunnel's hostname; it must refuse "control" capability
+   auth (see `socketCap` in `daemon.ts`) on any request whose `Host` header
+   matches that tunnel hostname — driving only ever works from `localhost`/LAN,
+   never through the public URL, even with a valid control token. That converts
+   a leaked control token from "remote code execution" into "useless outside the
+   LAN," at the cost of the host not being able to drive from the public link
+   themselves (e.g. from their phone away from home — acceptable; they can still
+   observe+suggest remotely, or use the LAN/Tailscale path to drive).
 
 **Tier 2 — abuse guards, before the link reaches anyone less trusted than a known friend:**
 
@@ -87,10 +114,20 @@ restart instead. Tier 2 is fully covered for a wider audience short of revocatio
   through a tunnel (cloudflared/Tailscale = reachability + TLS, no code). Combined
   with the observer/control capability split (Next up #1), that's the entire
   "internet" story for the observe+suggest model — safe because remote can't drive.
-- **VPS-hosted variant (later, bigger).** Running the daemon on a server instead
-  of localhost re-introduces the "how does the codebase get onto the host"
-  question the local-first design sidesteps (git clone on start vs. work against a
-  repo already there). A separate bet; not needed for remote observe+suggest.
+- **Powwow relay — the product tier of reachability (planned).** A small,
+  self-hostable always-on server that the host daemon dials *out* to (outbound, so
+  NAT/firewalls aren't a problem); remote browsers connect to the relay, which
+  forwards over that connection. This is what makes remote feel like a product:
+  branded, stable URLs (e.g. `powwow.app/s/<id>`), zero install, no per-user
+  account — the "hosted version is a convenience" piece the original plan always
+  anticipated. Because it's self-hostable, the local-first value survives: a team
+  can run their own relay instead of depending on ours. Cost: real infra to build,
+  run, and pay for. Sits above the `--public` tunnel (convenience tier) — the two
+  coexist; the tunnel needs no server, the relay needs no third party.
+- **VPS-hosted variant (separate, bigger).** Running the *daemon itself* on a
+  server (not just relaying to a local one) re-introduces the "how does the
+  codebase get onto the host" question the local-first design sidesteps. Distinct
+  from the relay, and not needed for remote observe+suggest.
 - **Desktop companion app** — session history, past-work summaries, settings.
   Everything in it must also be reachable via CLI (plan constraint).
 - **Session recording & replay** — persist the event stream for async review.

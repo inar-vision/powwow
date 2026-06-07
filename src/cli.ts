@@ -5,6 +5,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { exec, spawn } from "child_process";
 import { startDaemon } from "./daemon";
+import { startQuickTunnel, TunnelHandle } from "./tunnel";
 
 // --- ANSI colour helpers (no deps) ----------------------------------------
 const c = {
@@ -28,6 +29,7 @@ interface StartArgs {
   host: string;
   cwd: string;
   claudeConfigDir?: string;
+  public?: boolean;
 }
 
 function parseStartArgs(argv: string[]): StartArgs {
@@ -56,6 +58,9 @@ function parseStartArgs(argv: string[]): StartArgs {
       case "--claude-config-dir":
         args.claudeConfigDir = argv[++i];
         break;
+      case "--public":
+        args.public = true;
+        break;
       case "-h":
       case "--help":
         printHelp();
@@ -82,6 +87,10 @@ Start options:
   --port <n>          Port to listen on (default: 4321)
   --host <addr>       Bind address (default: 0.0.0.0, reachable on your LAN)
   --cwd <dir>         Working directory for the wrapped command (default: cwd)
+  --public            Open a public URL via a cloudflared quick tunnel (needs
+                      cloudflared on PATH). Convenience tier — best-effort,
+                      unauthenticated by Cloudflare, no SLA. Driving still only
+                      works from localhost/LAN, never through the public link.
   -h, --help          Show this help
 
 Serve options:
@@ -539,7 +548,7 @@ async function main(): Promise<void> {
   const controlToken = crypto.randomBytes(16).toString("hex");
   const observerToken = crypto.randomBytes(16).toString("hex");
 
-  const daemon = await startDaemon({
+  const daemonOpts = {
     cmd: args.cmd,
     cwd: args.cwd,
     port: args.port,
@@ -547,23 +556,50 @@ async function main(): Promise<void> {
     token: controlToken,
     observerToken,
     claudeConfigDir: args.claudeConfigDir,
-  });
+  } as Parameters<typeof startDaemon>[0];
+  const daemon = await startDaemon(daemonOpts);
+
+  let tunnel: TunnelHandle | undefined;
+  if (args.public) {
+    console.log("\n  Opening a public tunnel via cloudflared…");
+    try {
+      tunnel = await startQuickTunnel(`http://localhost:${daemon.port}`);
+      // Mutates the same options object the daemon is holding: from this point
+      // on, requests whose Host header matches the tunnel are refused control
+      // capability — see the `viaTunnel` check in daemon.ts.
+      daemonOpts.tunnelHost = tunnel.hostname;
+    } catch (err) {
+      console.error(`\n  Could not open a public tunnel: ${(err as Error).message}\n`);
+      daemon.close();
+      process.exit(1);
+    }
+  }
 
   const lines: string[] = [];
   lines.push("");
   lines.push("  powwow session is live");
   lines.push(`  wrapping: ${args.cmd.join(" ")}`);
   lines.push("");
-  lines.push("  Host (terminal view):");
+  lines.push("  Host (terminal view — driving only works here, never via the public link):");
   lines.push(`    this machine   http://localhost:${daemon.port}/?t=${controlToken}`);
   for (const ip of lanAddresses()) {
     lines.push(`    on your LAN    http://${ip}:${daemon.port}/?t=${controlToken}`);
   }
   lines.push("");
   lines.push("  Teammates (observer view, safe to share):");
+  if (tunnel) {
+    lines.push(`    on the internet   ${tunnel.url}/observe?t=${observerToken}`);
+  }
   lines.push(`    this machine   http://localhost:${daemon.port}/observe?t=${observerToken}`);
   for (const ip of lanAddresses()) {
     lines.push(`    on your LAN    http://${ip}:${daemon.port}/observe?t=${observerToken}`);
+  }
+  if (tunnel) {
+    lines.push("");
+    lines.push("  The internet link is a cloudflared quick tunnel: best-effort, not");
+    lines.push("  authenticated by Cloudflare, no SLA — it can be reclaimed or throttled");
+    lines.push("  any time. Driving still only works from localhost/LAN; the control link");
+    lines.push("  above does nothing if opened through the tunnel, even with its token.");
   }
   lines.push("");
   lines.push("  Ctrl-C here ends the session for everyone.");
@@ -573,6 +609,7 @@ async function main(): Promise<void> {
   console.log(lines.join("\n"));
 
   const shutdown = () => {
+    tunnel?.close();
     daemon.close();
     process.exit(0);
   };
