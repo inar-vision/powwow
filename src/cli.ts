@@ -379,9 +379,21 @@ async function cmdServe(argv: string[]): Promise<void> {
   const args = parseServeArgs(argv);
 
   if (!args.foreground) {
-    // Default: detach. If already running, just print the URL and exit.
+    // Default: detach. If already running, just print the URL and exit —
+    // UNLESS what's running doesn't match what was asked for: --public on a
+    // session that was started without it (so never even attempted a tunnel)
+    // would otherwise silently hand back the old local-only links, looking
+    // exactly like --public was ignored.
     const existing = readRegistry(args.cwd);
     if (existing && isProcessAlive(existing.pid)) {
+      const neverAttemptedTunnel = existing.tunnelUrl == null && existing.tunnelError == null;
+      if (args.public && neverAttemptedTunnel) {
+        console.log("\n  A powwow session is already running here without a public tunnel");
+        console.log("  (it was started before --public was requested). Restart it to add one:\n");
+        console.log("    /powwow-stop");
+        console.log("    /powwow --public\n");
+        console.log("  Current session — local/LAN links:");
+      }
       printShareLinks(existing.port, existing.observerToken, existing.tunnelUrl, existing.tunnelError);
       process.exit(0);
     }
