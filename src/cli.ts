@@ -98,6 +98,8 @@ Serve options:
   --cwd <dir>             Working directory of the Claude session (default: cwd)
   --foreground            Run in foreground instead of detaching (for debugging)
   --claude-config-dir     Override Claude config directory (default: ~/.claude)
+  --public                Open a public URL via a cloudflared quick tunnel (needs
+                          cloudflared on PATH). Same caveats as start --public.
 
 Examples:
   powwow start                       # share a bash session
@@ -287,17 +289,20 @@ function cwdToRegistrySlug(cwd: string): string {
   return cwd.replace(/\//g, "-").replace(/\\/g, "-");
 }
 
-function writeRegistry(cwd: string, port: number, controlToken: string, observerToken: string): void {
+function writeRegistry(cwd: string, port: number, controlToken: string, observerToken: string, tunnelUrl?: string): void {
   fs.mkdirSync(ACTIVE_DIR, { recursive: true });
   const file = path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`);
-  fs.writeFileSync(file, JSON.stringify({ port, controlToken, observerToken, pid: process.pid }));
+  // `tunnelUrl` is always written explicitly (string | null), never omitted —
+  // its mere presence in the file is how a polling reader knows the tunnel
+  // attempt (if any) has concluded, success or failure.
+  fs.writeFileSync(file, JSON.stringify({ port, controlToken, observerToken, tunnelUrl: tunnelUrl ?? null, pid: process.pid }));
 }
 
 function deleteRegistry(cwd: string): void {
   try { fs.unlinkSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`)); } catch { }
 }
 
-function readRegistry(cwd: string): { port: number; controlToken: string; observerToken: string; pid: number } | null {
+function readRegistry(cwd: string): { port: number; controlToken: string; observerToken: string; tunnelUrl?: string | null; pid: number } | null {
   try {
     const data = JSON.parse(fs.readFileSync(path.join(ACTIVE_DIR, `${cwdToRegistrySlug(cwd)}.json`), "utf8"));
     // Back-compat: old registry files used a single `token` field.
@@ -320,7 +325,7 @@ function openInBrowser(url: string): void {
   exec(cmd, (err) => { if (err) console.error("  Could not auto-open browser:", err.message); });
 }
 
-interface ServeArgs { port: number; host: string; cwd: string; claudeConfigDir?: string; foreground?: boolean; }
+interface ServeArgs { port: number; host: string; cwd: string; claudeConfigDir?: string; foreground?: boolean; public?: boolean; }
 
 function parseServeArgs(argv: string[]): ServeArgs {
   const args: ServeArgs = { port: 4321, host: "0.0.0.0", cwd: process.cwd() };
@@ -331,6 +336,7 @@ function parseServeArgs(argv: string[]): ServeArgs {
       case "--cwd":  args.cwd  = argv[++i] ?? args.cwd; break;
       case "--claude-config-dir": args.claudeConfigDir = argv[++i]; break;
       case "--foreground": args.foreground = true; break;
+      case "--public": args.public = true; break;
       // kept for back-compat with existing hook scripts
       case "--detach": break;
     }
@@ -338,15 +344,23 @@ function parseServeArgs(argv: string[]): ServeArgs {
   return args;
 }
 
-function printShareLinks(port: number, observerToken: string): string {
+function printShareLinks(port: number, observerToken: string, tunnelUrl?: string): string {
   const lanIps = lanAddresses();
   const observerUrls = lanIps.length
     ? lanIps.map((ip) => `http://${ip}:${port}/observe?t=${observerToken}`)
     : [`http://localhost:${port}/observe?t=${observerToken}`];
   console.log("\npowwow is live. Share with teammates:\n");
+  if (tunnelUrl) {
+    console.log(`  on the internet   ${tunnelUrl}/observe?t=${observerToken}`);
+  }
   for (const u of observerUrls) console.log(`  ${u}`);
   console.log("");
-  return observerUrls[0];
+  if (tunnelUrl) {
+    console.log("  Internet link is a cloudflared quick tunnel: best-effort, not");
+    console.log("  authenticated by Cloudflare, no SLA. Driving stays local either way —");
+    console.log("  this companion only ever copies accepted suggestions to your clipboard.\n");
+  }
+  return tunnelUrl ? `${tunnelUrl}/observe?t=${observerToken}` : observerUrls[0];
 }
 
 async function cmdServe(argv: string[]): Promise<void> {
@@ -356,7 +370,7 @@ async function cmdServe(argv: string[]): Promise<void> {
     // Default: detach. If already running, just print the URL and exit.
     const existing = readRegistry(args.cwd);
     if (existing && isProcessAlive(existing.pid)) {
-      printShareLinks(existing.port, existing.observerToken);
+      printShareLinks(existing.port, existing.observerToken, existing.tunnelUrl ?? undefined);
       process.exit(0);
     }
     // Fork self with --foreground, fully detached from this process.
@@ -367,20 +381,26 @@ async function cmdServe(argv: string[]): Promise<void> {
       "--host", args.host,
     ];
     if (args.claudeConfigDir) spawnArgs.push("--claude-config-dir", args.claudeConfigDir);
+    if (args.public) spawnArgs.push("--public");
     const child = spawn(process.execPath, spawnArgs, { detached: true, stdio: "ignore" });
     child.unref();
-    // Poll for the registry file (up to 6 s).
-    for (let i = 0; i < 30; i++) {
+    // Poll for the registry file (up to 6 s normally; longer once a tunnel is
+    // involved, since cloudflared needs time to register its public hostname).
+    const pollAttempts = args.public ? 90 : 30;
+    for (let i = 0; i < pollAttempts; i++) {
       await new Promise((r) => setTimeout(r, 200));
       const reg = readRegistry(args.cwd);
-      if (reg && isProcessAlive(reg.pid)) {
-        const primaryObserver = printShareLinks(reg.port, reg.observerToken);
+      // `tunnelUrl` is written as string | null once the tunnel attempt (if
+      // any) has concluded — wait for that before printing, so we never show
+      // the share links mid-attempt and then again with the public one missing.
+      if (reg && isProcessAlive(reg.pid) && (!args.public || reg.tunnelUrl !== undefined)) {
+        const primaryObserver = printShareLinks(reg.port, reg.observerToken, reg.tunnelUrl ?? undefined);
         const hostUrl = `http://localhost:${reg.port}/host?t=${reg.controlToken}&obs=${encodeURIComponent(primaryObserver)}`;
         openInBrowser(hostUrl);
         process.exit(0);
       }
     }
-    console.error("powwow: relay did not start within 6 seconds.");
+    console.error("powwow: relay did not start within " + (args.public ? "18" : "6") + " seconds.");
     console.error("  Another session may be running on this port — try: node " + path.resolve(__dirname, "cli.js") + " stop --all");
     process.exit(1);
     return;
@@ -394,7 +414,7 @@ async function cmdServe(argv: string[]): Promise<void> {
 
   const controlToken = crypto.randomBytes(16).toString("hex");
   const observerToken = crypto.randomBytes(16).toString("hex");
-  const daemon = await startDaemon({
+  const daemonOpts = {
     cwd: args.cwd,
     port: args.port,
     host: args.host,
@@ -402,9 +422,26 @@ async function cmdServe(argv: string[]): Promise<void> {
     observerToken,
     claudeConfigDir: args.claudeConfigDir,
     serveMode: true,
-  });
+  } as Parameters<typeof startDaemon>[0];
+  const daemon = await startDaemon(daemonOpts);
 
-  writeRegistry(args.cwd, daemon.port, controlToken, observerToken);
+  let tunnel: TunnelHandle | undefined;
+  if (args.public) {
+    try {
+      tunnel = await startQuickTunnel(`http://localhost:${daemon.port}`);
+      // Same enforcement as `start --public`: confines driving to localhost/LAN
+      // even though this whole port is now proxied to the public internet —
+      // see `viaTunnel` in daemon.ts.
+      daemonOpts.tunnelHost = tunnel.hostname;
+    } catch (err) {
+      console.error(`\n  Could not open a public tunnel: ${(err as Error).message}`);
+      console.error("  Continuing with local/LAN sharing only.\n");
+    }
+  }
+
+  // Written only once the tunnel attempt (if any) has resolved one way or the
+  // other, so the detached parent's poll never observes a half-finished state.
+  writeRegistry(args.cwd, daemon.port, controlToken, observerToken, tunnel?.url);
 
   const lanIps = lanAddresses();
   const shareUrls = lanIps.length
@@ -413,12 +450,14 @@ async function cmdServe(argv: string[]): Promise<void> {
   const hostUrl = `http://localhost:${daemon.port}/host?t=${controlToken}&obs=${encodeURIComponent(shareUrls[0])}`;
 
   console.log(`\n  powwow companion started — share with teammates:\n`);
+  if (tunnel) console.log(`    on the internet   ${tunnel.url}/observe?t=${observerToken}`);
   for (const u of shareUrls) console.log(`    ${u}`);
   console.log("");
 
   openInBrowser(hostUrl);
 
   const shutdown = () => {
+    tunnel?.close();
     deleteRegistry(args.cwd);
     daemon.close();
     process.exit(0);
@@ -485,10 +524,15 @@ function cmdSetup(argv: string[]): void {
 
   const cliPath = path.resolve(__dirname, "cli.js");
   const serveCmd = `node ${cliPath} serve --cwd "$PWD"`
-    + (idx !== -1 ? ` --claude-config-dir ${claudeConfigDir}` : "");
+    + (idx !== -1 ? ` --claude-config-dir ${claudeConfigDir}` : "")
+    + ` $ARGUMENTS`;
 
   const content = [
     "Run this command and reply with the observer URL from its output. Do not run any other commands.",
+    "",
+    "Pass --public through as an argument (e.g. `/powwow --public`) to also open",
+    "a public link via a cloudflared quick tunnel (requires `cloudflared` to be",
+    "installed and on PATH). Driving always stays local either way.",
     "",
     "```bash",
     serveCmd,
