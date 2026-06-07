@@ -381,21 +381,28 @@ async function cmdServe(argv: string[]): Promise<void> {
   if (!args.foreground) {
     // Default: detach. If already running, just print the URL and exit —
     // UNLESS what's running doesn't match what was asked for: --public on a
-    // session that was started without it (so never even attempted a tunnel)
-    // would otherwise silently hand back the old local-only links, looking
-    // exactly like --public was ignored.
+    // session that was started without it (so never even attempted a tunnel).
+    // In that case, restart it transparently below rather than silently
+    // handing back the old local-only links (which would look exactly like
+    // --public was ignored) or asking the user to do the restart by hand.
     const existing = readRegistry(args.cwd);
     if (existing && isProcessAlive(existing.pid)) {
       const neverAttemptedTunnel = existing.tunnelUrl == null && existing.tunnelError == null;
       if (args.public && neverAttemptedTunnel) {
-        console.log("\n  A powwow session is already running here without a public tunnel");
-        console.log("  (it was started before --public was requested). Restart it to add one:\n");
-        console.log("    /powwow-stop");
-        console.log("    /powwow --public\n");
-        console.log("  Current session — local/LAN links:");
+        // The running session predates the --public request and never even
+        // tried to open a tunnel — restart it transparently so --public
+        // "just works" in one step instead of asking the user to run
+        // /powwow-stop then /powwow --public themselves.
+        console.log("\n  Restarting the running session to add a public tunnel (--public)...");
+        process.kill(existing.pid, "SIGTERM");
+        deleteRegistry(args.cwd);
+        for (let i = 0; i < 25 && isProcessAlive(existing.pid); i++) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      } else {
+        printShareLinks(existing.port, existing.observerToken, existing.tunnelUrl, existing.tunnelError);
+        process.exit(0);
       }
-      printShareLinks(existing.port, existing.observerToken, existing.tunnelUrl, existing.tunnelError);
-      process.exit(0);
     }
     // Fork self with --foreground, fully detached from this process.
     const spawnArgs = [
